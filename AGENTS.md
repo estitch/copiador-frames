@@ -8,7 +8,8 @@ Single crate, no workspace.
 ## Build & Run
 
 ```powershell
-cargo run
+npm run tauri:dev     # Development mode (Vite hot-reload + Tauri window)
+npm run tauri:build   # Production build
 ```
 
 No lint, format, or typecheck config exists.
@@ -26,10 +27,13 @@ Run from repo root so the temp DB lands alongside `copiador.db`.
 
 | Module | Role |
 |---|---|
-| `main.rs` | GUI app with 4 tabs (Dashboard, Matrix, Settings, Channels) |
+| `main.rs` | Tauri entry point with commands and event forwarding |
+| `lib.rs` | Library root, re-exports modules |
 | `config.rs` | `AppConfig` struct, JSON serialize/deserialize |
 | `db.rs` | SQLite via rusqlite, WAL mode, schema init on connect |
 | `worker.rs` | Background sync thread, communicates via mpsc channels |
+| `frontend/` | HTML/CSS/JS UI (Vite + vanilla JS), 4 tabs |
+| `src-tauri/` | Tauri config, capabilities, build script, icons |
 
 - DB connection opened fresh per operation (each method opens its own `DatabaseManager`).
 - Worker runs a 20s sync cycle; UI has a "Sync Now" button that sends `WorkerCommand::TriggerSync`.

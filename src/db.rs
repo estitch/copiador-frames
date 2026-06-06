@@ -1,9 +1,10 @@
 use crate::config::AppConfig;
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
     pub id: i64,
     pub timestamp: String,
