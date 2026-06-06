@@ -7,6 +7,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[allow(dead_code)]
 pub enum WorkerCommand {
     TriggerSync,
     ReloadConfig,

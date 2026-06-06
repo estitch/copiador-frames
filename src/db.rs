@@ -448,6 +448,7 @@ impl LogBuffer {
         ));
     }
 
+    #[allow(dead_code)]
     pub fn push_log_entry(&mut self, entry: &LogEntry) {
         self.entries.push((
             entry.nivel.clone(),
@@ -458,10 +459,12 @@ impl LogBuffer {
         ));
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
