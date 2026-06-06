@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::db::{DatabaseManager, LogBuffer};
 use chrono::Timelike;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -62,26 +63,33 @@ pub struct SyncWorker {
     rx: Receiver<WorkerCommand>,
     tx: Sender<UiMessage>,
     state: Arc<Mutex<WorkerState>>,
-    tar_tx: Option<Sender<TarMessage>>,
-    tar_handle: Option<std::thread::JoinHandle<()>>,
+    tar_senders: Vec<Sender<TarMessage>>,
+    tar_handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl SyncWorker {
     pub fn new(db_path: PathBuf, rx: Receiver<WorkerCommand>, tx: Sender<UiMessage>) -> Self {
-        let (tar_tx, tar_rx) = std::sync::mpsc::channel();
-        let tar_db_path = db_path.clone();
-        let tar_ui_tx = tx.clone();
-        let tar_handle = std::thread::spawn(move || {
-            TarWorker::run_loop(tar_rx, tar_db_path, tar_ui_tx);
-        });
+        let mut tar_senders = Vec::with_capacity(TAR_WORKER_COUNT);
+        let mut tar_handles = Vec::with_capacity(TAR_WORKER_COUNT);
+
+        for _ in 0..TAR_WORKER_COUNT {
+            let (tx_inner, rx_inner) = std::sync::mpsc::channel();
+            let tar_db_path = db_path.clone();
+            let tar_ui_tx = tx.clone();
+            let handle = std::thread::spawn(move || {
+                TarWorker::run_loop(rx_inner, tar_db_path, tar_ui_tx);
+            });
+            tar_senders.push(tx_inner);
+            tar_handles.push(handle);
+        }
 
         Self {
             db_path,
             rx,
             tx,
             state: Arc::new(Mutex::new(WorkerState::new())),
-            tar_tx: Some(tar_tx),
-            tar_handle: Some(tar_handle),
+            tar_senders,
+            tar_handles,
         }
     }
 
@@ -119,8 +127,8 @@ impl SyncWorker {
             }
 
             if shutdown {
-                self.tar_tx = None;
-                if let Some(handle) = self.tar_handle.take() {
+                self.tar_senders.clear();
+                for handle in self.tar_handles.drain(..) {
                     let _ = handle.join();
                 }
                 let _ = db.insert_log("INFO", "WORKER_SHUTDOWN", "Motor de sincronización backend apagado.", None, None);
@@ -181,13 +189,13 @@ impl SyncWorker {
 
         let db_path = self.db_path.clone();
         let ui_tx = &self.tx;
-        let tar_tx = &self.tar_tx;
+        let tar_senders = &self.tar_senders;
         let state = &self.state;
 
         pool.scope(|s| {
             for (canal, tasks) in &channel_tasks {
                 s.spawn(|_| {
-                    Self::process_channel(canal, tasks, &config, &source_now, &db_path, ui_tx, tar_tx, state);
+                    Self::process_channel(canal, tasks, &config, &source_now, &db_path, ui_tx, tar_senders, state);
                 });
             }
         });
@@ -203,7 +211,7 @@ impl SyncWorker {
         source_now: &chrono::DateTime<chrono::Local>,
         db_path: &Path,
         ui_tx: &Sender<UiMessage>,
-        tar_tx: &Option<Sender<TarMessage>>,
+        tar_senders: &[Sender<TarMessage>],
         state: &Mutex<WorkerState>,
     ) {
         let mut ch_db = match DatabaseManager::new(db_path) {
@@ -369,22 +377,21 @@ impl SyncWorker {
                         count: copied_count,
                     });
 
-                    if config.habilitar_tar {
-                        if let Some(tx) = tar_tx {
-                            let tar_path = config.ruta_copia_tar.join(fecha).join(canal).join(format!("{}.tar", hora));
-                            for f in &copied_files {
-                                let _ = tx.send(TarMessage::AddFile {
-                                    dest_path: f.clone(),
-                                    tar_path: tar_path.clone(),
-                                });
-                            }
-                            let _ = tx.send(TarMessage::HourComplete {
-                                canal: canal.to_string(),
-                                fecha: fecha.clone(),
-                                hora: *hora,
-                                tar_path,
+                    if config.habilitar_tar && !tar_senders.is_empty() {
+                        let tar_path = config.ruta_copia_tar.join(fecha).join(canal).join(format!("{}.tar", hora));
+                        let idx = select_tar_worker(&tar_path, tar_senders.len());
+                        for f in &copied_files {
+                            let _ = tar_senders[idx].send(TarMessage::AddFile {
+                                dest_path: f.clone(),
+                                tar_path: tar_path.clone(),
                             });
                         }
+                        let _ = tar_senders[idx].send(TarMessage::HourComplete {
+                            canal: canal.to_string(),
+                            fecha: fecha.clone(),
+                            hora: *hora,
+                            tar_path,
+                        });
                     }
 
                     log_buffer.push("INFO", "COPY_SUCCESS",
@@ -671,6 +678,14 @@ impl SyncWorker {
             }
         }
     }
+}
+
+const TAR_WORKER_COUNT: usize = 4;
+
+fn select_tar_worker(tar_path: &Path, num_workers: usize) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tar_path.hash(&mut hasher);
+    (hasher.finish() as usize) % num_workers
 }
 
 struct TarWorker;
