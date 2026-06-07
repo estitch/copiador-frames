@@ -414,6 +414,17 @@ impl DatabaseManager {
         Ok(res)
     }
 
+    /// Resetea todos los registros "Verde" a "Azul" con 0 intentos y 0 frames.
+    /// Se usa cuando el usuario cambia las rutas de destino, para forzar que
+    /// todas las horas completadas anteriormente se re-copien al nuevo destino.
+    pub fn reset_destino_sync(&self) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE REGISTRO_HORA SET estado_color = 'Azul', intentos = 0, cantidad_frames = 0 WHERE estado_color = 'Verde'",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Elimina registros de FECHA_SINCRONIZACION (y REGISTRO_HORA en cascada) cuyo
     /// codigo_fecha YYMMDD sea estrictamente anterior al límite dado.
     ///

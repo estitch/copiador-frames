@@ -37,6 +37,21 @@ fn get_config(state: tauri::State<AppState>) -> Result<config::AppConfig, String
 fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), String> {
     let new_config: config::AppConfig = serde_json::from_str(&config).map_err(|e| e.to_string())?;
     let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+
+    // Detectar cambio de rutas de destino → resetear estado de sincronización
+    if let Ok(current_config) = db.get_config() {
+        let dest_changed = current_config.ruta_copia_normal != new_config.ruta_copia_normal
+            || current_config.ruta_copia_tar != new_config.ruta_copia_tar;
+        if dest_changed {
+            let _ = db.reset_destino_sync();
+            let _ = db.insert_log(
+                "WARN", "DEST_CHANGED",
+                "Ruta de destino modificada. Re-sincronizando horas completadas anteriormente.",
+                None, None,
+            );
+        }
+    }
+
     db.save_config(&new_config).map_err(|e| e.to_string())?;
     let _ = db.insert_log("INFO", "CONFIG_SAVE", "Configuracion guardada.", None, None);
     let tx = state.tx.lock().map_err(|e| e.to_string())?;

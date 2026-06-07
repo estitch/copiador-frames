@@ -119,6 +119,7 @@ impl SyncWorker {
                     WorkerCommand::ReloadConfig => {
                         let _ = db.insert_log("INFO", "CONFIG_RELOAD", "Configuración recargada en el backend.", None, None);
                         let _ = self.tx.send(UiMessage::LogAdded);
+                        trigger_now = true;
                     }
                     WorkerCommand::Shutdown => {
                         shutdown = true;
