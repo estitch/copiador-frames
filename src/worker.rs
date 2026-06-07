@@ -8,6 +8,14 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+struct TaskCache {
+    all_tasks: Vec<(String, String, u8)>,
+    last_scan: Instant,
+    force_rescan: bool,
+}
+
 #[allow(dead_code)]
 pub enum WorkerCommand {
     TriggerSync,
@@ -64,6 +72,8 @@ pub struct SyncWorker {
     rx: Receiver<WorkerCommand>,
     tx: Sender<UiMessage>,
     state: Arc<Mutex<WorkerState>>,
+    pool: rayon::ThreadPool,
+    task_cache: Mutex<TaskCache>,
     tar_senders: Vec<Sender<TarMessage>>,
     tar_handles: Vec<std::thread::JoinHandle<()>>,
 }
@@ -84,11 +94,28 @@ impl SyncWorker {
             tar_handles.push(handle);
         }
 
+        let pool_size = DatabaseManager::new(&db_path)
+            .ok()
+            .and_then(|db| db.get_config().ok())
+            .map(|cfg| cfg.max_hilos_copia.max(1) as usize)
+            .unwrap_or(4);
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(pool_size)
+            .build()
+            .expect("Fallo al crear pool de hilos rayon");
+
         Self {
             db_path,
             rx,
             tx,
             state: Arc::new(Mutex::new(WorkerState::new())),
+            pool,
+            task_cache: Mutex::new(TaskCache {
+                all_tasks: Vec::new(),
+                last_scan: Instant::now(),
+                force_rescan: true,
+            }),
             tar_senders,
             tar_handles,
         }
@@ -116,11 +143,17 @@ impl SyncWorker {
                 match cmd {
                     WorkerCommand::TriggerSync => {
                         trigger_now = true;
+                        if let Ok(mut cache) = self.task_cache.lock() {
+                            cache.force_rescan = true;
+                        }
                     }
                     WorkerCommand::ReloadConfig => {
                         let _ = db.insert_log("INFO", "CONFIG_RELOAD", "Configuración recargada en el backend.", None, None);
                         let _ = self.tx.send(UiMessage::LogAdded);
                         trigger_now = true;
+                        if let Ok(mut cache) = self.task_cache.lock() {
+                            cache.force_rescan = true;
+                        }
                     }
                     WorkerCommand::Shutdown => {
                         shutdown = true;
@@ -164,10 +197,18 @@ impl SyncWorker {
         let source_now = local_now + chrono::Duration::hours(config.horas_desface as i64);
         let source_date = source_now.date_naive();
 
-        let discovered_tasks = self.discover_tasks(&config, &db, source_date);
+        let tasks = {
+            let mut cache = self.task_cache.lock().expect("task_cache mutex poisoned");
+            if cache.force_rescan || cache.last_scan.elapsed() >= SCAN_INTERVAL {
+                cache.all_tasks = self.discover_tasks_fs(&config, source_date);
+                cache.last_scan = Instant::now();
+                cache.force_rescan = false;
+            }
+            Self::filter_pending_tasks(&cache.all_tasks, &db)
+        };
 
         let mut by_channel: HashMap<String, Vec<(String, u8)>> = HashMap::new();
-        for (fecha, canal, hora) in discovered_tasks {
+        for (fecha, canal, hora) in tasks {
             by_channel.entry(canal).or_default().push((fecha, hora));
         }
 
@@ -176,25 +217,13 @@ impl SyncWorker {
         }
 
         let channel_tasks: Vec<(String, Vec<(String, u8)>)> = by_channel.into_iter().collect();
-        let max_threads = (config.max_hilos_copia.max(1) as usize).min(channel_tasks.len());
-
-        let pool = match rayon::ThreadPoolBuilder::new()
-            .num_threads(max_threads)
-            .build()
-        {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = db.insert_log("ERROR", "POOL_FAIL", &format!("Error creando pool de hilos: {}", e), None, None);
-                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
-            }
-        };
 
         let db_path = self.db_path.clone();
         let ui_tx = &self.tx;
         let tar_senders = &self.tar_senders;
         let state = &self.state;
 
-        pool.scope(|s| {
+        self.pool.scope(|s| {
             for (canal, tasks) in &channel_tasks {
                 s.spawn(|_| {
                     Self::process_channel(canal, tasks, &config, &source_now, &db_path, ui_tx, tar_senders, state);
@@ -438,7 +467,7 @@ impl SyncWorker {
             .and_hms_opt(hora as u32, 0, 0)
     }
 
-    fn discover_tasks(&self, config: &AppConfig, db: &DatabaseManager, source_date: chrono::NaiveDate) -> Vec<(String, String, u8)> {
+    fn discover_tasks_fs(&self, config: &AppConfig, source_date: chrono::NaiveDate) -> Vec<(String, String, u8)> {
         if config.canales.is_empty() {
             return Vec::new();
         }
@@ -498,28 +527,35 @@ impl SyncWorker {
             }
         }
 
-        let mut pending_tasks = Vec::new();
-        let mut cache_por_fecha: HashMap<String, Vec<(String, u8, String, u32)>> = HashMap::new();
+        tasks
+    }
 
-        for (fecha, canal, hora) in tasks {
-            if !cache_por_fecha.contains_key(&fecha) {
-                if let Ok(records) = db.get_registro_horas_por_fecha(&fecha) {
+    fn filter_pending_tasks(
+        all_tasks: &[(String, String, u8)],
+        db: &DatabaseManager,
+    ) -> Vec<(String, String, u8)> {
+        let mut cache_por_fecha: HashMap<String, Vec<(String, u8, String, u32)>> = HashMap::new();
+        let mut pending = Vec::new();
+
+        for (fecha, canal, hora) in all_tasks {
+            if !cache_por_fecha.contains_key(fecha) {
+                if let Ok(records) = db.get_registro_horas_por_fecha(fecha) {
                     cache_por_fecha.insert(fecha.clone(), records);
                 } else {
                     cache_por_fecha.insert(fecha.clone(), Vec::new());
                 }
             }
 
-            let is_completed = cache_por_fecha.get(&fecha).map_or(false, |records| {
-                records.iter().any(|(c, h, status, _)| c == &canal && *h == hora && status == "Verde")
+            let is_completed = cache_por_fecha.get(fecha).map_or(false, |records| {
+                records.iter().any(|(c, h, status, _)| c == canal && *h == *hora && status == "Verde")
             });
 
             if !is_completed {
-                pending_tasks.push((fecha, canal, hora));
+                pending.push((fecha.clone(), canal.clone(), *hora));
             }
         }
 
-        pending_tasks.sort_by(|a, b| {
+        pending.sort_by(|a, b| {
             let res = a.0.cmp(&b.0);
             if res != std::cmp::Ordering::Equal {
                 return res;
@@ -531,7 +567,7 @@ impl SyncWorker {
             a.2.cmp(&b.2)
         });
 
-        pending_tasks
+        pending
     }
 
     fn has_compressed_files(path: &Path) -> bool {
