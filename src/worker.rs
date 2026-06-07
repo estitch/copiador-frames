@@ -42,6 +42,7 @@ enum TarMessage {
     },
 }
 
+#[derive(Clone)]
 pub struct WorkerState {
     pub cooldowns: HashMap<String, Instant>,
     pub last_checks: HashMap<(String, String, u8), (u32, Instant)>,
@@ -224,16 +225,16 @@ impl SyncWorker {
         };
         let mut log_buffer = LogBuffer::new();
 
+        let mut local_state = state.lock().expect("WorkerState mutex poisoned").clone();
+
         for (fecha, hora) in tasks {
-            let in_os32_cooldown = {
-                let gs = state.lock().unwrap();
-                gs.cooldowns.get(canal).map(|t| t.elapsed() < Duration::from_secs(30 * 60)).unwrap_or(false)
-            };
+            let in_os32_cooldown = local_state.cooldowns.get(canal)
+                .map(|t| t.elapsed() < Duration::from_secs(30 * 60))
+                .unwrap_or(false);
             if in_os32_cooldown {
                 continue;
             } else {
-                let mut gs = state.lock().unwrap();
-                gs.cooldowns.remove(canal);
+                local_state.cooldowns.remove(canal);
             }
 
             let task_key = (fecha.clone(), canal.to_string(), *hora);
@@ -271,21 +272,19 @@ impl SyncWorker {
 
             if is_incomplete {
                 if let Some(last_time) = last_attempt_time {
-                    if chrono::Local::now().naive_local().signed_duration_since(last_time) < chrono::Duration::hours(1) {
+                    if chrono::Local::now().naive_local().signed_duration_since(last_time) < chrono::Duration::minutes(1) {
                         continue;
                     }
                 }
             }
 
-            let in_zip_cooldown = {
-                let gs = state.lock().unwrap();
-                gs.zip_cooldowns.get(&task_key).map(|t| t.elapsed() < Duration::from_secs(5 * 60)).unwrap_or(false)
-            };
+            let in_zip_cooldown = local_state.zip_cooldowns.get(&task_key)
+                .map(|t| t.elapsed() < Duration::from_secs(5 * 60))
+                .unwrap_or(false);
             if in_zip_cooldown {
                 continue;
             } else {
-                let mut gs = state.lock().unwrap();
-                gs.zip_cooldowns.remove(&task_key);
+                local_state.zip_cooldowns.remove(&task_key);
             }
 
             let origin_hour_path = config.ruta_origen.join(fecha).join(canal).join(hora.to_string());
@@ -311,22 +310,15 @@ impl SyncWorker {
                     Some(canal), None,
                 );
                 let _ = ui_tx.send(UiMessage::LogAdded);
-                {
-                    let mut gs = state.lock().unwrap();
-                    gs.zip_cooldowns.insert(task_key.clone(), Instant::now());
-                    gs.last_checks.remove(&task_key);
-                }
+                local_state.zip_cooldowns.insert(task_key.clone(), Instant::now());
+                local_state.last_checks.remove(&task_key);
                 continue;
             }
 
             if current_count >= 3600 {
-                let mut gs = state.lock().unwrap();
-                gs.last_checks.remove(&task_key);
-            } else if let Some((prev_count, check_time)) = {
-                let gs = state.lock().unwrap();
-                gs.last_checks.get(&task_key).cloned()
-            } {
-                if check_time.elapsed() < Duration::from_secs(5 * 60) {
+                local_state.last_checks.remove(&task_key);
+            } else if let Some((prev_count, check_time)) = local_state.last_checks.get(&task_key).cloned() {
+                if check_time.elapsed() < Duration::from_secs(5) {
                     continue;
                 }
                 if current_count != prev_count {
@@ -336,15 +328,12 @@ impl SyncWorker {
                         Some(canal), None,
                     );
                     let _ = ui_tx.send(UiMessage::LogAdded);
-                    let mut gs = state.lock().unwrap();
-                    gs.last_checks.insert(task_key, (current_count, Instant::now()));
+                    local_state.last_checks.insert(task_key, (current_count, Instant::now()));
                     continue;
                 }
-                let mut gs = state.lock().unwrap();
-                gs.last_checks.remove(&task_key);
+                local_state.last_checks.remove(&task_key);
             } else {
-                let mut gs = state.lock().unwrap();
-                gs.last_checks.insert(task_key.clone(), (current_count, Instant::now()));
+                local_state.last_checks.insert(task_key.clone(), (current_count, Instant::now()));
                 let _ = ch_db.insert_log(
                     "INFO", "STABILITY_START",
                     &format!("Verificando estabilidad canal {} hora {} ({} archivos).", canal, hora, current_count),
@@ -414,10 +403,7 @@ impl SyncWorker {
                     });
 
                     if is_os_error_32 {
-                        {
-                            let mut gs = state.lock().unwrap();
-                            gs.cooldowns.insert(canal.to_string(), Instant::now());
-                        }
+                        local_state.cooldowns.insert(canal.to_string(), Instant::now());
                         log_buffer.push("ERROR", "LOCK_ERROR_32",
                             &format!("OS Error 32 canal {}. Pausando 30 min.", canal),
                             Some(canal), Some(&format!("{:?}", err)));
@@ -428,6 +414,13 @@ impl SyncWorker {
                     }
                 }
             }
+        }
+
+        {
+            let mut gs = state.lock().expect("WorkerState mutex poisoned");
+            gs.cooldowns = local_state.cooldowns;
+            gs.zip_cooldowns = local_state.zip_cooldowns;
+            gs.last_checks = local_state.last_checks;
         }
 
         let _ = log_buffer.flush(&mut ch_db);

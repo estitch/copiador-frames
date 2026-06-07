@@ -13,7 +13,7 @@ use worker::{SyncWorker, UiMessage, WorkerCommand};
 // --- Tauri managed state ---
 struct AppState {
     tx: Mutex<Sender<WorkerCommand>>,
-    db_path: PathBuf,
+    db: Mutex<DatabaseManager>,
 }
 
 // --- DTOs for commands ---
@@ -29,14 +29,14 @@ struct MatrixEntry {
 
 #[tauri::command]
 fn get_config(state: tauri::State<AppState>) -> Result<config::AppConfig, String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_config().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), String> {
     let new_config: config::AppConfig = serde_json::from_str(&config).map_err(|e| e.to_string())?;
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Detectar cambio de rutas de destino → resetear estado de sincronización
     if let Ok(current_config) = db.get_config() {
@@ -61,19 +61,19 @@ fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), Stri
 
 #[tauri::command]
 fn get_logs(state: tauri::State<AppState>, limit: u32) -> Result<Vec<db::LogEntry>, String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_recent_logs(limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_dates(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_all_dates().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_matrix(state: tauri::State<AppState>, date: String) -> Result<Vec<MatrixEntry>, String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let rows = db.get_registro_horas_por_fecha(&date).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
@@ -88,7 +88,7 @@ fn get_matrix(state: tauri::State<AppState>, date: String) -> Result<Vec<MatrixE
 
 #[tauri::command]
 fn add_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut config = db.get_config().map_err(|e| e.to_string())?;
     if config.canales.contains(&code) {
         return Ok(());
@@ -102,7 +102,7 @@ fn add_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> 
 
 #[tauri::command]
 fn remove_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> {
-    let db = DatabaseManager::new(&state.db_path).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut config = db.get_config().map_err(|e| e.to_string())?;
     config.canales.retain(|c| c != &code);
     db.save_config(&config).map_err(|e| e.to_string())?;
@@ -140,11 +140,15 @@ fn main() {
         worker.run_loop();
     });
 
+    // Conexión singleton para comandos Tauri
+    let db = DatabaseManager::new(&db_path)
+        .expect("Fallo al inicializar la base de datos");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             tx: Mutex::new(worker_tx),
-            db_path,
+            db: Mutex::new(db),
         })
         .setup(|app| {
             let handle = app.handle().clone();
