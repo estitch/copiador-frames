@@ -39,15 +39,12 @@ pub enum UiMessage {
 }
 
 enum TarMessage {
-    AddFile {
-        dest_path: PathBuf,
-        tar_path: PathBuf,
-    },
-    HourComplete {
+    BuildTar {
         canal: String,
         fecha: String,
         hora: u8,
         tar_path: PathBuf,
+        files: Vec<PathBuf>,
     },
 }
 
@@ -401,17 +398,12 @@ impl SyncWorker {
                     if config.habilitar_tar && !tar_senders.is_empty() {
                         let tar_path = config.ruta_copia_tar.join(fecha).join(canal).join(format!("{}.tar", hora));
                         let idx = select_tar_worker(&tar_path, tar_senders.len());
-                        for f in &copied_files {
-                            let _ = tar_senders[idx].send(TarMessage::AddFile {
-                                dest_path: f.clone(),
-                                tar_path: tar_path.clone(),
-                            });
-                        }
-                        let _ = tar_senders[idx].send(TarMessage::HourComplete {
+                        let _ = tar_senders[idx].send(TarMessage::BuildTar {
                             canal: canal.to_string(),
                             fecha: fecha.clone(),
                             hora: *hora,
                             tar_path,
+                            files: copied_files.clone(),
                         });
                     }
 
@@ -755,48 +747,36 @@ impl TarWorker {
                 return;
             }
         };
-        let mut builders: HashMap<PathBuf, tar::Builder<std::fs::File>> = HashMap::new();
 
         while let Ok(msg) = rx.recv() {
             match msg {
-                TarMessage::AddFile { dest_path, tar_path } => {
-                    if !builders.contains_key(&tar_path) {
-                        if let Some(parent) = tar_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        match std::fs::File::create(&tar_path) {
-                            Ok(f) => {
-                                builders.insert(tar_path.clone(), tar::Builder::new(f));
-                            }
-                            Err(e) => {
-                                let _ = db.insert_log("ERROR", "TAR_FAIL",
-                                    &format!("No se pudo crear TAR {:?}: {}", tar_path, e), None, None);
-                                continue;
-                            }
-                        }
+                TarMessage::BuildTar { canal, fecha, hora, tar_path, files } => {
+                    if let Some(parent) = tar_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
                     }
-                    if let Some(builder) = builders.get_mut(&tar_path) {
-                        if let Some(name) = dest_path.file_name() {
-                            if let Ok(mut f) = std::fs::File::open(&dest_path) {
-                                let _ = builder.append_file(name, &mut f);
+                    match std::fs::File::create(&tar_path) {
+                        Ok(f) => {
+                            let mut builder = tar::Builder::new(f);
+                            for f in &files {
+                                if let Some(name) = f.file_name() {
+                                    if let Ok(mut file) = std::fs::File::open(f) {
+                                        let _ = builder.append_file(name, &mut file);
+                                    }
+                                }
                             }
+                            let _ = builder.finish();
+                            let _ = db.insert_log("INFO", "TAR_SUCCESS",
+                                &format!("TAR {} {} h{} en {:?}", canal, fecha, hora, tar_path),
+                                Some(&canal), None);
+                            let _ = ui_tx.send(UiMessage::LogAdded);
                         }
-                    }
-                }
-                TarMessage::HourComplete { canal, fecha, hora, tar_path } => {
-                    if let Some(mut builder) = builders.remove(&tar_path) {
-                        let _ = builder.finish();
-                        let _ = db.insert_log("INFO", "TAR_SUCCESS",
-                            &format!("TAR {} {} h{} en {:?}", canal, fecha, hora, tar_path),
-                            Some(&canal), None);
-                        let _ = ui_tx.send(UiMessage::LogAdded);
+                        Err(e) => {
+                            let _ = db.insert_log("ERROR", "TAR_FAIL",
+                                &format!("No se pudo crear TAR {:?}: {}", tar_path, e), None, None);
+                        }
                     }
                 }
             }
-        }
-
-        for (_, mut builder) in builders.drain() {
-            let _ = builder.finish();
         }
     }
 }
