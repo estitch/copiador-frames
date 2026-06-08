@@ -12,6 +12,7 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 struct TaskCache {
     all_tasks: Vec<(String, String, u8)>,
+    pending_tasks: Vec<(String, String, u8)>,
     last_scan: Instant,
     force_rescan: bool,
 }
@@ -113,6 +114,7 @@ impl SyncWorker {
             pool,
             task_cache: Mutex::new(TaskCache {
                 all_tasks: Vec::new(),
+                pending_tasks: Vec::new(),
                 last_scan: Instant::now(),
                 force_rescan: true,
             }),
@@ -202,11 +204,12 @@ impl SyncWorker {
             let mut cache = self.task_cache.lock().expect("task_cache mutex poisoned");
             if cache.force_rescan || cache.last_scan.elapsed() >= SCAN_INTERVAL {
                 cache.all_tasks = self.discover_tasks_fs(&config, source_date, &mut log_buffer);
+                cache.pending_tasks = Self::filter_pending_tasks(&cache.all_tasks, &db);
                 cache.last_scan = Instant::now();
                 cache.force_rescan = false;
             }
             let _ = log_buffer.flush(&mut db);
-            Self::filter_pending_tasks(&cache.all_tasks, &db)
+            cache.pending_tasks.clone()
         };
 
         let mut by_channel: HashMap<String, Vec<(String, u8)>> = HashMap::new();
