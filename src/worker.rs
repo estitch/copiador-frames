@@ -212,16 +212,9 @@ impl SyncWorker {
             cache.pending_tasks.clone()
         };
 
-        let mut by_channel: HashMap<String, Vec<(String, u8)>> = HashMap::new();
-        for (fecha, canal, hora) in tasks {
-            by_channel.entry(canal).or_default().push((fecha, hora));
-        }
-
-        if by_channel.is_empty() {
+        if tasks.is_empty() {
             return Ok(());
         }
-
-        let channel_tasks: Vec<(String, Vec<(String, u8)>)> = by_channel.into_iter().collect();
 
         let db_path = self.db_path.clone();
         let ui_tx = &self.tx;
@@ -229,9 +222,13 @@ impl SyncWorker {
         let state = &self.state;
 
         self.pool.scope(|s| {
-            for (canal, tasks) in &channel_tasks {
-                s.spawn(|_| {
-                    Self::process_channel(canal, tasks, &config, &source_now, &db_path, ui_tx, tar_senders, state);
+            for (fecha, canal, hora) in &tasks {
+                let single_task = vec![(fecha.clone(), *hora)];
+                let cfg = config.clone();
+                let dbp = db_path.clone();
+                let ch = canal.clone();
+                s.spawn(move |_| {
+                    Self::process_channel(&ch, &single_task, &cfg, &source_now, &dbp, ui_tx, tar_senders, state);
                 });
             }
         });
