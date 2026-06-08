@@ -187,7 +187,7 @@ impl SyncWorker {
     }
 
     fn execute_sync_cycle(&self) -> Result<(), rusqlite::Error> {
-        let db = DatabaseManager::new(&self.db_path)?;
+        let mut db = DatabaseManager::new(&self.db_path)?;
         let config = db.get_config()?;
         if config.ruta_origen.as_os_str().is_empty() || config.ruta_copia_normal.as_os_str().is_empty() {
             return Ok(());
@@ -198,12 +198,14 @@ impl SyncWorker {
         let source_date = source_now.date_naive();
 
         let tasks = {
+            let mut log_buffer = LogBuffer::new();
             let mut cache = self.task_cache.lock().expect("task_cache mutex poisoned");
             if cache.force_rescan || cache.last_scan.elapsed() >= SCAN_INTERVAL {
-                cache.all_tasks = self.discover_tasks_fs(&config, source_date);
+                cache.all_tasks = self.discover_tasks_fs(&config, source_date, &mut log_buffer);
                 cache.last_scan = Instant::now();
                 cache.force_rescan = false;
             }
+            let _ = log_buffer.flush(&mut db);
             Self::filter_pending_tasks(&cache.all_tasks, &db)
         };
 
@@ -467,7 +469,7 @@ impl SyncWorker {
             .and_hms_opt(hora as u32, 0, 0)
     }
 
-    fn discover_tasks_fs(&self, config: &AppConfig, source_date: chrono::NaiveDate) -> Vec<(String, String, u8)> {
+    fn discover_tasks_fs(&self, config: &AppConfig, source_date: chrono::NaiveDate, log_buffer: &mut LogBuffer) -> Vec<(String, String, u8)> {
         if config.canales.is_empty() {
             return Vec::new();
         }
@@ -478,10 +480,20 @@ impl SyncWorker {
         let mut tasks = Vec::new();
         let read_dir = match std::fs::read_dir(&config.ruta_origen) {
             Ok(d) => d,
-            Err(_) => return tasks,
+            Err(e) => {
+                log_buffer.push("ERROR", "SCAN_ERROR", &format!("No se pudo leer directorio raíz: {}", e), None, None);
+                return tasks;
+            }
         };
 
-        for entry in read_dir.flatten() {
+        for result in read_dir {
+            let entry = match result {
+                Ok(e) => e,
+                Err(e) => {
+                    log_buffer.push("ERROR", "SCAN_ERROR", &format!("Error al leer entrada en raíz: {}", e), None, None);
+                    continue;
+                }
+            };
             let path = entry.path();
             if path.is_dir() {
                 if let Some(fecha_str) = path.file_name().and_then(|s| s.to_str()) {
@@ -494,13 +506,27 @@ impl SyncWorker {
                         }
 
                         if let Ok(chan_dir) = std::fs::read_dir(&path) {
-                            for chan_entry in chan_dir.flatten() {
+                            for chan_result in chan_dir {
+                                let chan_entry = match chan_result {
+                                    Ok(e) => e,
+                                    Err(e) => {
+                                        log_buffer.push("ERROR", "SCAN_ERROR", &format!("Error al leer entrada de canal: {}", e), None, None);
+                                        continue;
+                                    }
+                                };
                                 let chan_path = chan_entry.path();
                                 if chan_path.is_dir() {
                                     if let Some(canal_str) = chan_path.file_name().and_then(|s| s.to_str()) {
                                         if config.canales.contains(&canal_str.to_string()) {
                                             if let Ok(hour_dir) = std::fs::read_dir(&chan_path) {
-                                                for hour_entry in hour_dir.flatten() {
+                                                for hour_result in hour_dir {
+                                                    let hour_entry = match hour_result {
+                                                        Ok(e) => e,
+                                                        Err(e) => {
+                                                            log_buffer.push("ERROR", "SCAN_ERROR", &format!("Error al leer entrada de hora: {}", e), None, None);
+                                                            continue;
+                                                        }
+                                                    };
                                                     let hour_path = hour_entry.path();
                                                     if hour_path.is_dir() {
                                                         if let Some(hour_str) = hour_path.file_name().and_then(|s| s.to_str()) {
