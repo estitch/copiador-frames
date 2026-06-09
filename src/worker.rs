@@ -240,7 +240,7 @@ impl SyncWorker {
             let mut cache = self.task_cache.lock().expect("task_cache mutex poisoned");
             if cache.force_rescan || cache.last_scan.elapsed() >= SCAN_INTERVAL {
                 cache.all_tasks = self.discover_tasks_fs(&config, source_date, &mut log_buffer);
-                cache.pending_tasks = Self::filter_pending_tasks(&cache.all_tasks, &db);
+                cache.pending_tasks = Self::filter_pending_tasks(&cache.all_tasks, &db, &config);
                 cache.last_scan = Instant::now();
                 cache.force_rescan = false;
             }
@@ -725,6 +725,7 @@ impl SyncWorker {
     fn filter_pending_tasks(
         all_tasks: &[(String, String, u8)],
         db: &DatabaseManager,
+        config: &AppConfig,
     ) -> Vec<(String, String, u8)> {
         let mut cache_por_fecha: HashMap<String, Vec<(String, u8, String, u32)>> = HashMap::new();
         let mut pending = Vec::new();
@@ -739,9 +740,23 @@ impl SyncWorker {
             }
 
             let is_completed = cache_por_fecha.get(fecha).is_some_and(|records| {
-                records
-                    .iter()
-                    .any(|(c, h, status, _)| c == canal && *h == *hora && status == "Verde")
+                records.iter().any(|(c, h, status, _)| {
+                    if c == canal && *h == *hora && status == "Verde" {
+                        let dest = config
+                            .ruta_copia_normal
+                            .join(fecha)
+                            .join(canal)
+                            .join(hora.to_string());
+                        if dest.exists() {
+                            true
+                        } else {
+                            let _ = db.update_hora_status(canal, fecha, *hora, "Azul", 0);
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
             });
 
             if !is_completed {
