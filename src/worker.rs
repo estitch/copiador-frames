@@ -325,7 +325,7 @@ impl SyncWorker {
             if is_incomplete {
                 let local_count = Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
                 if current_count == local_count {
-                    let revert_status = if local_count > 0 { "Azul" } else { "Rojo" };
+                    let revert_status = if local_count >= 3600 { "Verde" } else if local_count > 0 { "Azul" } else { "Rojo" };
                     let _ = ch_db.update_hora_status(canal, fecha, *hora, revert_status, local_count);
                     continue;
                 }
@@ -384,15 +384,16 @@ impl SyncWorker {
             });
 
             match Self::execute_atomic_copy(&origin_hour_path, &dest_hour_path) {
-                Ok((copied_count, copied_files)) => {
-                    let final_status = if copied_count >= 3600 { "Verde" } else { "Azul" };
-                    let _ = ch_db.update_hora_status(canal, fecha, *hora, final_status, copied_count);
+                Ok((_copied_count, copied_files)) => {
+                    let final_count = Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
+                    let final_status = if final_count >= 3600 { "Verde" } else { "Azul" };
+                    let _ = ch_db.update_hora_status(canal, fecha, *hora, final_status, final_count);
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
                         canal: canal.to_string(),
                         fecha: fecha.clone(),
                         hora: *hora,
                         status: final_status.to_string(),
-                        count: copied_count,
+                        count: final_count,
                     });
 
                     if config.habilitar_tar && !tar_senders.is_empty() {
@@ -408,7 +409,7 @@ impl SyncWorker {
                     }
 
                     log_buffer.push("INFO", "COPY_SUCCESS",
-                        &format!("Sincronizado canal {} hora {}. Archivos: {}.", canal, hora, copied_count),
+                        &format!("Sincronizado canal {} hora {}. Archivos: {}.", canal, hora, final_count),
                         Some(canal), None);
                 }
                 Err(err) => {
