@@ -9,6 +9,7 @@ let state = {
   dates: [],
   selectedDate: '',
   matrixData: [],
+  progressMap: {},
   isSyncing: false,
   clockInterval: null,
 };
@@ -148,16 +149,25 @@ function renderMatrix() {
       let color = '#d1d5db';
       let estado = 'Sin datos';
       let count = 0;
+      let cellClasses = 'matrix-cell';
+      let cellContent = '';
       if (entry) {
         estado = entry.estado;
         count = entry.cantidad;
         color = estado === 'Verde' ? '#22c55e' :
                 estado === 'Azul' ? '#3b82f6' :
                 estado === 'Naranja' ? '#fb923c' : '#ef4444';
+        if (estado === 'Naranja') {
+          const prog = state.progressMap[`${canal}-${h}`];
+          if (prog) {
+            cellClasses += ' matrix-cell-copying';
+            cellContent = `${Math.round((prog.current / prog.total) * 100)}%`;
+          }
+        }
       }
-      html += `<span class="matrix-cell" style="background:${color}"
+      html += `<span class="${cellClasses}" style="background:${color}"
         data-canal="${escHtml(canal)}" data-hora="${h}"
-        data-estado="${escHtml(estado)}" data-count="${count}"></span>`;
+        data-estado="${escHtml(estado)}" data-count="${count}">${cellContent}</span>`;
     }
     html += '</div>';
   }
@@ -177,7 +187,9 @@ function renderMatrix() {
       const h = cell.dataset.hora;
       const est = cell.dataset.estado;
       const cnt = cell.dataset.count;
-      tooltip.innerHTML = `Canal: ${escHtml(c)}<br>Hora: ${String(h).padStart(2, '0')}:00<br>Estado: ${escHtml(est)}<br>Archivos: ${cnt} / 3600`;
+      const prog = state.progressMap[`${c}-${h}`];
+      const progText = prog ? `<br>Progreso: ${prog.current} / ${prog.total} (${Math.round((prog.current / prog.total) * 100)}%)` : '';
+      tooltip.innerHTML = `Canal: ${escHtml(c)}<br>Hora: ${String(h).padStart(2, '0')}:00<br>Estado: ${escHtml(est)}<br>Archivos: ${cnt} / 3600${progText}`;
       tooltip.classList.remove('hidden');
     });
     cell.addEventListener('mousemove', (e) => {
@@ -364,6 +376,7 @@ async function setupListeners() {
 
   await listen('sync-finished', () => {
     state.isSyncing = false;
+    state.progressMap = {};
     syncIndicator.textContent = 'Esperando ciclo';
     syncIndicator.className = 'sync-idle';
     refreshMatrix();
@@ -372,6 +385,8 @@ async function setupListeners() {
 
   await listen('status-updated', (event) => {
     const { canal, fecha, hora, status, count } = event.payload;
+    const key = `${canal}-${hora}`;
+    delete state.progressMap[key];
     if (fecha === state.selectedDate) {
       const idx = state.matrixData.findIndex(
         (d) => d.canal === canal && d.hora === hora
@@ -381,7 +396,35 @@ async function setupListeners() {
       } else {
         state.matrixData.push({ canal, hora, estado: status, cantidad: count });
       }
-      renderMatrix();
+      const cell = document.querySelector(
+        `.matrix-cell[data-canal="${canal}"][data-hora="${hora}"]`
+      );
+      if (cell) {
+        const color = status === 'Verde' ? '#22c55e' :
+                      status === 'Azul' ? '#3b82f6' :
+                      status === 'Naranja' ? '#fb923c' : '#ef4444';
+        cell.style.background = color;
+        cell.dataset.estado = status;
+        cell.dataset.count = count;
+        cell.textContent = '';
+        cell.className = 'matrix-cell';
+      }
+    }
+  });
+
+  await listen('file-progress', (event) => {
+    const { canal, fecha, hora, current, total } = event.payload;
+    const key = `${canal}-${hora}`;
+    state.progressMap[key] = { current, total };
+    if (fecha === state.selectedDate) {
+      const cell = document.querySelector(
+        `.matrix-cell[data-canal="${canal}"][data-hora="${hora}"]`
+      );
+      if (cell) {
+        const pct = Math.round((current / total) * 100);
+        cell.textContent = `${pct}%`;
+        cell.className = 'matrix-cell matrix-cell-copying';
+      }
     }
   });
 

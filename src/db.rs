@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -23,10 +23,10 @@ impl DatabaseManager {
     /// Abre la base de datos y configura el entorno para concurrencia segura con WAL
     pub fn new(path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
-        
+
         // Habilitar modo WAL y configurar timeout para evitar bloqueos
-        conn.pragma_update(None, "journal_mode", &"WAL")?;
-        conn.pragma_update(None, "foreign_keys", &"ON")?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
 
         let db = DatabaseManager { conn };
@@ -85,8 +85,14 @@ impl DatabaseManager {
         )?;
 
         // Migraciones para bases de datos existentes
-        let _ = self.conn.execute("ALTER TABLE REGISTRO_HORA ADD COLUMN intentos INTEGER NOT NULL DEFAULT 0;", []);
-        let _ = self.conn.execute("ALTER TABLE CONFIGURACION ADD COLUMN max_hilos_copia INTEGER NOT NULL DEFAULT 4;", []);
+        let _ = self.conn.execute(
+            "ALTER TABLE REGISTRO_HORA ADD COLUMN intentos INTEGER NOT NULL DEFAULT 0;",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE CONFIGURACION ADD COLUMN max_hilos_copia INTEGER NOT NULL DEFAULT 4;",
+            [],
+        );
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS LOG_SISTEMA (
@@ -146,7 +152,9 @@ impl DatabaseManager {
         })?;
 
         // Cargar canales
-        let mut stmt_canales = self.conn.prepare("SELECT codigo_canal FROM CANAL ORDER BY codigo_canal ASC")?;
+        let mut stmt_canales = self
+            .conn
+            .prepare("SELECT codigo_canal FROM CANAL ORDER BY codigo_canal ASC")?;
         let canales_iter = stmt_canales.query_map([], |row| row.get::<_, String>(0))?;
         for c in canales_iter {
             config.canales.push(c?);
@@ -200,10 +208,15 @@ impl DatabaseManager {
         } else {
             let vars = vec!["?"; config.canales.len()].join(",");
             let sql = format!("DELETE FROM CANAL WHERE codigo_canal NOT IN ({})", vars);
-            
+
             // rusqlite exige pasar los parámetros en una estructura compatible
-            let params_ref: Vec<&dyn rusqlite::ToSql> = config.canales.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-            self.conn.execute(&sql, rusqlite::params_from_iter(params_ref))?;
+            let params_ref: Vec<&dyn rusqlite::ToSql> = config
+                .canales
+                .iter()
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+            self.conn
+                .execute(&sql, rusqlite::params_from_iter(params_ref))?;
         }
 
         Ok(())
@@ -224,10 +237,11 @@ impl DatabaseManager {
 
     /// Busca un canal registrado y retorna su ID. No crea el canal si no existe.
     pub fn get_canal(&self, codigo_canal: &str) -> Result<Option<i64>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM CANAL WHERE codigo_canal = ?",
-        )?;
-        let mut rows = stmt.query_map(rusqlite::params![codigo_canal], |row| row.get::<_, i64>(0))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM CANAL WHERE codigo_canal = ?")?;
+        let mut rows =
+            stmt.query_map(rusqlite::params![codigo_canal], |row| row.get::<_, i64>(0))?;
         if let Some(res) = rows.next() {
             Ok(Some(res?))
         } else {
@@ -268,7 +282,8 @@ impl DatabaseManager {
                 ultimo_intento = excluded.ultimo_intento"
         };
 
-        self.conn.execute(sql, params![canal_id, fecha_id, hora, count, status, now])?;
+        self.conn
+            .execute(sql, params![canal_id, fecha_id, hora, count, status, now])?;
 
         Ok(())
     }
@@ -403,9 +418,9 @@ impl DatabaseManager {
 
     /// Obtiene todas las fechas sincronizadas registradas
     pub fn get_all_dates(&self) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT codigo_fecha FROM FECHA_SINCRONIZACION ORDER BY codigo_fecha DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT codigo_fecha FROM FECHA_SINCRONIZACION ORDER BY codigo_fecha DESC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut res = Vec::new();
         for r in rows {
@@ -444,12 +459,27 @@ pub struct LogBuffer {
     entries: Vec<(String, String, String, Option<String>, Option<String>)>,
 }
 
+impl Default for LogBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogBuffer {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
-    pub fn push(&mut self, nivel: &str, tipo_accion: &str, mensaje: &str, canal: Option<&str>, traza: Option<&str>) {
+    pub fn push(
+        &mut self,
+        nivel: &str,
+        tipo_accion: &str,
+        mensaje: &str,
+        canal: Option<&str>,
+        traza: Option<&str>,
+    ) {
         self.entries.push((
             nivel.to_string(),
             tipo_accion.to_string(),
@@ -480,7 +510,7 @@ impl LogBuffer {
         self.entries.is_empty()
     }
 
-    pub fn flush(&mut self, db: &mut DatabaseManager) -> Result<(), rusqlite::Error> {
+    pub fn flush(&mut self, db: &DatabaseManager) -> Result<(), rusqlite::Error> {
         if self.entries.is_empty() {
             return Ok(());
         }
@@ -492,19 +522,19 @@ impl LogBuffer {
 
 impl DatabaseManager {
     pub fn insert_logs_batch(
-        &mut self,
+        &self,
         entries: &[(String, String, String, Option<String>, Option<String>)],
     ) -> Result<(), rusqlite::Error> {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let tx = self.conn.transaction()?;
+        self.conn.execute_batch("BEGIN")?;
         for (nivel, tipo_accion, mensaje, canal, traza) in entries {
-            tx.execute(
+            self.conn.execute(
                 "INSERT INTO LOG_SISTEMA (timestamp, nivel, tipo_accion, mensaje, canal_contexto, traza_error) 
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![now, nivel, tipo_accion, mensaje, canal, traza],
             )?;
         }
-        tx.commit()?;
+        self.conn.execute_batch("COMMIT")?;
         Ok(())
     }
 }
@@ -519,7 +549,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.horas_desface = -5;
         config.canales = vec!["1001".to_string(), "1002".to_string()];
-        
+
         let json = config.to_json().unwrap();
         let loaded = AppConfig::from_json(&json).unwrap();
         assert_eq!(loaded.horas_desface, -5);
@@ -535,9 +565,16 @@ mod tests {
         let _ = std::fs::remove_file("test_copiador.db-wal");
 
         let db = DatabaseManager::new(&db_path).unwrap();
-        
+
         // Test insert log
-        db.insert_log("INFO", "TEST_ACTION", "Testing log insertion", Some("1001"), None).unwrap();
+        db.insert_log(
+            "INFO",
+            "TEST_ACTION",
+            "Testing log insertion",
+            Some("1001"),
+            None,
+        )
+        .unwrap();
         let logs = db.get_recent_logs(10).unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].nivel, "INFO");
@@ -554,7 +591,8 @@ mod tests {
         assert_eq!(loaded_config.canales, vec!["1234"]);
 
         // Test update status
-        db.update_hora_status("1234", "260519", 2, "Verde", 3600).unwrap();
+        db.update_hora_status("1234", "260519", 2, "Verde", 3600)
+            .unwrap();
         let status = db.get_registro_horas_por_fecha("260519").unwrap();
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].0, "1234");

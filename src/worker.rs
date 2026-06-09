@@ -35,6 +35,13 @@ pub enum UiMessage {
         status: String,
         count: u32,
     },
+    FileProgress {
+        canal: String,
+        fecha: String,
+        hora: u8,
+        current: u32,
+        total: u32,
+    },
     LogAdded,
 }
 
@@ -53,6 +60,12 @@ pub struct WorkerState {
     pub cooldowns: HashMap<String, Instant>,
     pub last_checks: HashMap<(String, String, u8), (u32, Instant)>,
     pub zip_cooldowns: HashMap<(String, String, u8), Instant>,
+}
+
+impl Default for WorkerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkerState {
@@ -132,7 +145,13 @@ impl SyncWorker {
         let mut last_sync_time = Instant::now() - Duration::from_secs(300);
         let cycle_interval = Duration::from_secs(20);
 
-        let _ = db.insert_log("INFO", "WORKER_START", "Motor de sincronización backend iniciado.", None, None);
+        let _ = db.insert_log(
+            "INFO",
+            "WORKER_START",
+            "Motor de sincronización backend iniciado.",
+            None,
+            None,
+        );
         let _ = self.tx.send(UiMessage::LogAdded);
 
         loop {
@@ -147,7 +166,13 @@ impl SyncWorker {
                         }
                     }
                     WorkerCommand::ReloadConfig => {
-                        let _ = db.insert_log("INFO", "CONFIG_RELOAD", "Configuración recargada en el backend.", None, None);
+                        let _ = db.insert_log(
+                            "INFO",
+                            "CONFIG_RELOAD",
+                            "Configuración recargada en el backend.",
+                            None,
+                            None,
+                        );
                         let _ = self.tx.send(UiMessage::LogAdded);
                         trigger_now = true;
                         if let Ok(mut cache) = self.task_cache.lock() {
@@ -165,7 +190,13 @@ impl SyncWorker {
                 for handle in self.tar_handles.drain(..) {
                     let _ = handle.join();
                 }
-                let _ = db.insert_log("INFO", "WORKER_SHUTDOWN", "Motor de sincronización backend apagado.", None, None);
+                let _ = db.insert_log(
+                    "INFO",
+                    "WORKER_SHUTDOWN",
+                    "Motor de sincronización backend apagado.",
+                    None,
+                    None,
+                );
                 let _ = self.tx.send(UiMessage::LogAdded);
                 break;
             }
@@ -174,7 +205,13 @@ impl SyncWorker {
             if trigger_now || elapsed >= cycle_interval {
                 let _ = self.tx.send(UiMessage::SyncStarted);
                 if let Err(e) = self.execute_sync_cycle() {
-                    let _ = db.insert_log("ERROR", "SYNC_CYCLE_FAIL", &format!("Fallo en ciclo de sincronización: {:?}", e), None, None);
+                    let _ = db.insert_log(
+                        "ERROR",
+                        "SYNC_CYCLE_FAIL",
+                        &format!("Fallo en ciclo de sincronización: {:?}", e),
+                        None,
+                        None,
+                    );
                     let _ = self.tx.send(UiMessage::LogAdded);
                 }
                 let _ = self.tx.send(UiMessage::SyncFinished);
@@ -186,9 +223,11 @@ impl SyncWorker {
     }
 
     fn execute_sync_cycle(&self) -> Result<(), rusqlite::Error> {
-        let mut db = DatabaseManager::new(&self.db_path)?;
+        let db = DatabaseManager::new(&self.db_path)?;
         let config = db.get_config()?;
-        if config.ruta_origen.as_os_str().is_empty() || config.ruta_copia_normal.as_os_str().is_empty() {
+        if config.ruta_origen.as_os_str().is_empty()
+            || config.ruta_copia_normal.as_os_str().is_empty()
+        {
             return Ok(());
         }
 
@@ -205,7 +244,7 @@ impl SyncWorker {
                 cache.last_scan = Instant::now();
                 cache.force_rescan = false;
             }
-            let _ = log_buffer.flush(&mut db);
+            let _ = log_buffer.flush(&db);
             cache.pending_tasks.clone()
         };
 
@@ -225,7 +264,16 @@ impl SyncWorker {
                 let dbp = db_path.clone();
                 let ch = canal.clone();
                 s.spawn(move |_| {
-                    Self::process_channel(&ch, &single_task, &cfg, &source_now, &dbp, ui_tx, tar_senders, state);
+                    Self::process_channel(
+                        &ch,
+                        &single_task,
+                        &cfg,
+                        &source_now,
+                        &dbp,
+                        ui_tx,
+                        tar_senders,
+                        state,
+                    );
                 });
             }
         });
@@ -244,7 +292,7 @@ impl SyncWorker {
         tar_senders: &[Sender<TarMessage>],
         state: &Mutex<WorkerState>,
     ) {
-        let mut ch_db = match DatabaseManager::new(db_path) {
+        let ch_db = match DatabaseManager::new(db_path) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("Error DB para canal {}: {:?}", canal, e);
@@ -256,7 +304,9 @@ impl SyncWorker {
         let mut local_state = state.lock().expect("WorkerState mutex poisoned").clone();
 
         for (fecha, hora) in tasks {
-            let in_os32_cooldown = local_state.cooldowns.get(canal)
+            let in_os32_cooldown = local_state
+                .cooldowns
+                .get(canal)
                 .map(|t| t.elapsed() < Duration::from_secs(30 * 60))
                 .unwrap_or(false);
             if in_os32_cooldown {
@@ -288,25 +338,35 @@ impl SyncWorker {
 
             let mut is_incomplete = false;
             let mut last_attempt_time = None;
-            if let Ok(Some((intentos, ultimo_intento_str))) = ch_db.get_hora_intentos(canal, fecha, *hora) {
+            if let Ok(Some((intentos, ultimo_intento_str))) =
+                ch_db.get_hora_intentos(canal, fecha, *hora)
+            {
                 if intentos >= 2 {
                     continue;
                 }
                 is_incomplete = true;
-                if let Ok(last_time) = chrono::NaiveDateTime::parse_from_str(&ultimo_intento_str, "%Y-%m-%d %H:%M:%S") {
+                if let Ok(last_time) =
+                    chrono::NaiveDateTime::parse_from_str(&ultimo_intento_str, "%Y-%m-%d %H:%M:%S")
+                {
                     last_attempt_time = Some(last_time);
                 }
             }
 
             if is_incomplete {
                 if let Some(last_time) = last_attempt_time {
-                    if chrono::Local::now().naive_local().signed_duration_since(last_time) < chrono::Duration::minutes(1) {
+                    if chrono::Local::now()
+                        .naive_local()
+                        .signed_duration_since(last_time)
+                        < chrono::Duration::minutes(1)
+                    {
                         continue;
                     }
                 }
             }
 
-            let in_zip_cooldown = local_state.zip_cooldowns.get(&task_key)
+            let in_zip_cooldown = local_state
+                .zip_cooldowns
+                .get(&task_key)
                 .map(|t| t.elapsed() < Duration::from_secs(5 * 60))
                 .unwrap_or(false);
             if in_zip_cooldown {
@@ -315,7 +375,11 @@ impl SyncWorker {
                 local_state.zip_cooldowns.remove(&task_key);
             }
 
-            let origin_hour_path = config.ruta_origen.join(fecha).join(canal).join(hora.to_string());
+            let origin_hour_path = config
+                .ruta_origen
+                .join(fecha)
+                .join(canal)
+                .join(hora.to_string());
             if !origin_hour_path.exists() {
                 continue;
             }
@@ -323,56 +387,92 @@ impl SyncWorker {
             let current_count = Self::count_origin_files_superficial(&origin_hour_path);
 
             if is_incomplete {
-                let local_count = Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
+                let local_count =
+                    Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
                 if current_count == local_count {
-                    let revert_status = if local_count >= 3600 { "Verde" } else if local_count > 0 { "Azul" } else { "Rojo" };
-                    let _ = ch_db.update_hora_status(canal, fecha, *hora, revert_status, local_count);
+                    let revert_status = if local_count >= 3600 {
+                        "Verde"
+                    } else if local_count > 0 {
+                        "Azul"
+                    } else {
+                        "Rojo"
+                    };
+                    let _ =
+                        ch_db.update_hora_status(canal, fecha, *hora, revert_status, local_count);
                     continue;
                 }
             }
 
             if Self::has_compressed_files(&origin_hour_path) {
                 let _ = ch_db.insert_log(
-                    "WARN", "COMPRESSED_EXCLUSION",
-                    &format!("Omitiendo canal {} hora {} por archivos .zip/.rar.", canal, hora),
-                    Some(canal), None,
+                    "WARN",
+                    "COMPRESSED_EXCLUSION",
+                    &format!(
+                        "Omitiendo canal {} hora {} por archivos .zip/.rar.",
+                        canal, hora
+                    ),
+                    Some(canal),
+                    None,
                 );
                 let _ = ui_tx.send(UiMessage::LogAdded);
-                local_state.zip_cooldowns.insert(task_key.clone(), Instant::now());
+                local_state
+                    .zip_cooldowns
+                    .insert(task_key.clone(), Instant::now());
                 local_state.last_checks.remove(&task_key);
                 continue;
             }
 
             if current_count >= 3600 {
                 local_state.last_checks.remove(&task_key);
-            } else if let Some((prev_count, check_time)) = local_state.last_checks.get(&task_key).cloned() {
+            } else if let Some((prev_count, check_time)) =
+                local_state.last_checks.get(&task_key).cloned()
+            {
                 if check_time.elapsed() < Duration::from_secs(5) {
                     continue;
                 }
                 if current_count != prev_count {
                     let _ = ch_db.insert_log(
-                        "WARN", "SIZE_UNSTABLE",
-                        &format!("Tamaño inestable canal {} hora {} ({}→{}).", canal, hora, prev_count, current_count),
-                        Some(canal), None,
+                        "WARN",
+                        "SIZE_UNSTABLE",
+                        &format!(
+                            "Tamaño inestable canal {} hora {} ({}→{}).",
+                            canal, hora, prev_count, current_count
+                        ),
+                        Some(canal),
+                        None,
                     );
                     let _ = ui_tx.send(UiMessage::LogAdded);
-                    local_state.last_checks.insert(task_key, (current_count, Instant::now()));
+                    local_state
+                        .last_checks
+                        .insert(task_key, (current_count, Instant::now()));
                     continue;
                 }
                 local_state.last_checks.remove(&task_key);
             } else {
-                local_state.last_checks.insert(task_key.clone(), (current_count, Instant::now()));
+                local_state
+                    .last_checks
+                    .insert(task_key.clone(), (current_count, Instant::now()));
                 let _ = ch_db.insert_log(
-                    "INFO", "STABILITY_START",
-                    &format!("Verificando estabilidad canal {} hora {} ({} archivos).", canal, hora, current_count),
-                    Some(canal), None,
+                    "INFO",
+                    "STABILITY_START",
+                    &format!(
+                        "Verificando estabilidad canal {} hora {} ({} archivos).",
+                        canal, hora, current_count
+                    ),
+                    Some(canal),
+                    None,
                 );
                 let _ = ui_tx.send(UiMessage::LogAdded);
                 continue;
             }
 
-            let dest_hour_path = config.ruta_copia_normal.join(fecha).join(canal).join(hora.to_string());
-            let previous_stats = Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
+            let dest_hour_path = config
+                .ruta_copia_normal
+                .join(fecha)
+                .join(canal)
+                .join(hora.to_string());
+            let previous_stats =
+                Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
 
             let _ = ch_db.update_hora_status(canal, fecha, *hora, "Naranja", previous_stats);
             let _ = ui_tx.send(UiMessage::StatusUpdated {
@@ -383,11 +483,29 @@ impl SyncWorker {
                 count: previous_stats,
             });
 
-            match Self::execute_atomic_copy(&origin_hour_path, &dest_hour_path) {
+            let progress_tx = ui_tx.clone();
+            let progress_canal = canal.to_string();
+            let progress_fecha = fecha.clone();
+            let progress_hora = *hora;
+            let send_progress = |current: u32| {
+                if current.is_multiple_of(30) || current == current_count {
+                    let _ = progress_tx.send(UiMessage::FileProgress {
+                        canal: progress_canal.clone(),
+                        fecha: progress_fecha.clone(),
+                        hora: progress_hora,
+                        current,
+                        total: current_count,
+                    });
+                }
+            };
+
+            match Self::execute_atomic_copy(&origin_hour_path, &dest_hour_path, &send_progress) {
                 Ok((_copied_count, copied_files)) => {
-                    let final_count = Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
+                    let final_count =
+                        Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
                     let final_status = if final_count >= 3600 { "Verde" } else { "Azul" };
-                    let _ = ch_db.update_hora_status(canal, fecha, *hora, final_status, final_count);
+                    let _ =
+                        ch_db.update_hora_status(canal, fecha, *hora, final_status, final_count);
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
                         canal: canal.to_string(),
                         fecha: fecha.clone(),
@@ -397,7 +515,11 @@ impl SyncWorker {
                     });
 
                     if config.habilitar_tar && !tar_senders.is_empty() {
-                        let tar_path = config.ruta_copia_tar.join(fecha).join(canal).join(format!("{}.tar", hora));
+                        let tar_path = config
+                            .ruta_copia_tar
+                            .join(fecha)
+                            .join(canal)
+                            .join(format!("{}.tar", hora));
                         let idx = select_tar_worker(&tar_path, tar_senders.len());
                         let _ = tar_senders[idx].send(TarMessage::BuildTar {
                             canal: canal.to_string(),
@@ -408,16 +530,29 @@ impl SyncWorker {
                         });
                     }
 
-                    log_buffer.push("INFO", "COPY_SUCCESS",
-                        &format!("Sincronizado canal {} hora {}. Archivos: {}.", canal, hora, final_count),
-                        Some(canal), None);
+                    log_buffer.push(
+                        "INFO",
+                        "COPY_SUCCESS",
+                        &format!(
+                            "Sincronizado canal {} hora {}. Archivos: {}.",
+                            canal, hora, final_count
+                        ),
+                        Some(canal),
+                        None,
+                    );
                 }
                 Err(err) => {
                     let _ = ch_db.increment_hora_intentos(canal, fecha, *hora);
                     let is_os_error_32 = err.raw_os_error() == Some(32);
 
                     let revert_status = if previous_stats > 0 { "Azul" } else { "Rojo" };
-                    let _ = ch_db.update_hora_status(canal, fecha, *hora, revert_status, previous_stats);
+                    let _ = ch_db.update_hora_status(
+                        canal,
+                        fecha,
+                        *hora,
+                        revert_status,
+                        previous_stats,
+                    );
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
                         canal: canal.to_string(),
                         fecha: fecha.clone(),
@@ -427,14 +562,24 @@ impl SyncWorker {
                     });
 
                     if is_os_error_32 {
-                        local_state.cooldowns.insert(canal.to_string(), Instant::now());
-                        log_buffer.push("ERROR", "LOCK_ERROR_32",
+                        local_state
+                            .cooldowns
+                            .insert(canal.to_string(), Instant::now());
+                        log_buffer.push(
+                            "ERROR",
+                            "LOCK_ERROR_32",
                             &format!("OS Error 32 canal {}. Pausando 30 min.", canal),
-                            Some(canal), Some(&format!("{:?}", err)));
+                            Some(canal),
+                            Some(&format!("{:?}", err)),
+                        );
                     } else {
-                        log_buffer.push("ERROR", "COPY_FAIL",
+                        log_buffer.push(
+                            "ERROR",
+                            "COPY_FAIL",
                             &format!("Error copiando canal {} hora {}: {}", canal, hora, err),
-                            Some(canal), Some(&format!("{:?}", err)));
+                            Some(canal),
+                            Some(&format!("{:?}", err)),
+                        );
                     }
                 }
             }
@@ -447,7 +592,7 @@ impl SyncWorker {
             gs.last_checks = local_state.last_checks;
         }
 
-        let _ = log_buffer.flush(&mut ch_db);
+        let _ = log_buffer.flush(&ch_db);
     }
 
     fn parse_task_time(fecha: &str, hora: u8) -> Option<chrono::NaiveDateTime> {
@@ -458,11 +603,15 @@ impl SyncWorker {
         let mm = fecha.get(2..4)?.parse::<u32>().ok()?;
         let dd = fecha.get(4..6)?.parse::<u32>().ok()?;
         let year = 2000 + yy;
-        chrono::NaiveDate::from_ymd_opt(year, mm, dd)?
-            .and_hms_opt(hora as u32, 0, 0)
+        chrono::NaiveDate::from_ymd_opt(year, mm, dd)?.and_hms_opt(hora as u32, 0, 0)
     }
 
-    fn discover_tasks_fs(&self, config: &AppConfig, source_date: chrono::NaiveDate, log_buffer: &mut LogBuffer) -> Vec<(String, String, u8)> {
+    fn discover_tasks_fs(
+        &self,
+        config: &AppConfig,
+        source_date: chrono::NaiveDate,
+        log_buffer: &mut LogBuffer,
+    ) -> Vec<(String, String, u8)> {
         if config.canales.is_empty() {
             return Vec::new();
         }
@@ -474,7 +623,13 @@ impl SyncWorker {
         let read_dir = match std::fs::read_dir(&config.ruta_origen) {
             Ok(d) => d,
             Err(e) => {
-                log_buffer.push("ERROR", "SCAN_ERROR", &format!("No se pudo leer directorio raíz: {}", e), None, None);
+                log_buffer.push(
+                    "ERROR",
+                    "SCAN_ERROR",
+                    &format!("No se pudo leer directorio raíz: {}", e),
+                    None,
+                    None,
+                );
                 return tasks;
             }
         };
@@ -483,7 +638,13 @@ impl SyncWorker {
             let entry = match result {
                 Ok(e) => e,
                 Err(e) => {
-                    log_buffer.push("ERROR", "SCAN_ERROR", &format!("Error al leer entrada en raíz: {}", e), None, None);
+                    log_buffer.push(
+                        "ERROR",
+                        "SCAN_ERROR",
+                        &format!("Error al leer entrada en raíz: {}", e),
+                        None,
+                        None,
+                    );
                     continue;
                 }
             };
@@ -503,13 +664,21 @@ impl SyncWorker {
                                 let chan_entry = match chan_result {
                                     Ok(e) => e,
                                     Err(e) => {
-                                        log_buffer.push("ERROR", "SCAN_ERROR", &format!("Error al leer entrada de canal: {}", e), None, None);
+                                        log_buffer.push(
+                                            "ERROR",
+                                            "SCAN_ERROR",
+                                            &format!("Error al leer entrada de canal: {}", e),
+                                            None,
+                                            None,
+                                        );
                                         continue;
                                     }
                                 };
                                 let chan_path = chan_entry.path();
                                 if chan_path.is_dir() {
-                                    if let Some(canal_str) = chan_path.file_name().and_then(|s| s.to_str()) {
+                                    if let Some(canal_str) =
+                                        chan_path.file_name().and_then(|s| s.to_str())
+                                    {
                                         if config.canales.contains(&canal_str.to_string()) {
                                             if let Ok(hour_dir) = std::fs::read_dir(&chan_path) {
                                                 for hour_result in hour_dir {
@@ -522,8 +691,12 @@ impl SyncWorker {
                                                     };
                                                     let hour_path = hour_entry.path();
                                                     if hour_path.is_dir() {
-                                                        if let Some(hour_str) = hour_path.file_name().and_then(|s| s.to_str()) {
-                                                            if let Ok(hora) = hour_str.parse::<u8>() {
+                                                        if let Some(hour_str) = hour_path
+                                                            .file_name()
+                                                            .and_then(|s| s.to_str())
+                                                        {
+                                                            if let Ok(hora) = hour_str.parse::<u8>()
+                                                            {
                                                                 if hora < 24 {
                                                                     tasks.push((
                                                                         fecha_str.to_string(),
@@ -565,8 +738,10 @@ impl SyncWorker {
                 }
             }
 
-            let is_completed = cache_por_fecha.get(fecha).map_or(false, |records| {
-                records.iter().any(|(c, h, status, _)| c == canal && *h == *hora && status == "Verde")
+            let is_completed = cache_por_fecha.get(fecha).is_some_and(|records| {
+                records
+                    .iter()
+                    .any(|(c, h, status, _)| c == canal && *h == *hora && status == "Verde")
             });
 
             if !is_completed {
@@ -610,7 +785,8 @@ impl SyncWorker {
 
     fn count_origin_files_superficial(path: &Path) -> u32 {
         if let Ok(entries) = std::fs::read_dir(path) {
-            entries.flatten()
+            entries
+                .flatten()
                 .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
                 .count() as u32
         } else {
@@ -621,7 +797,8 @@ impl SyncWorker {
     fn get_copied_file_count(base_path: &Path, fecha: &str, canal: &str, hora: u8) -> u32 {
         let path = base_path.join(fecha).join(canal).join(format!("{}", hora));
         if let Ok(entries) = std::fs::read_dir(path) {
-            entries.flatten()
+            entries
+                .flatten()
                 .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
                 .count() as u32
         } else {
@@ -657,7 +834,11 @@ impl SyncWorker {
         std::fs::copy(src, dst)
     }
 
-    fn execute_atomic_copy(src: &Path, dst: &Path) -> std::io::Result<(u32, Vec<PathBuf>)> {
+    fn execute_atomic_copy(
+        src: &Path,
+        dst: &Path,
+        progress: &dyn Fn(u32),
+    ) -> std::io::Result<(u32, Vec<PathBuf>)> {
         std::fs::create_dir_all(dst)?;
         let mut copied = Vec::new();
         let mut count = 0u32;
@@ -674,12 +855,18 @@ impl SyncWorker {
                 }
                 copied.push(dest);
                 count += 1;
+                progress(count);
             }
         }
         Ok((count, copied))
     }
 
-    fn reactive_purge(&self, config: &AppConfig, source_date: chrono::NaiveDate, db: &DatabaseManager) {
+    fn reactive_purge(
+        &self,
+        config: &AppConfig,
+        source_date: chrono::NaiveDate,
+        db: &DatabaseManager,
+    ) {
         let dias_a_mantener = config.dias_persistencia;
         if dias_a_mantener == 0 {
             return;
@@ -693,7 +880,13 @@ impl SyncWorker {
         let _ = db.delete_fechas_before(&limite_str);
     }
 
-    fn purge_path_older_than(&self, path: &Path, limit_date: chrono::NaiveDate, db: &DatabaseManager, tag: &str) {
+    fn purge_path_older_than(
+        &self,
+        path: &Path,
+        limit_date: chrono::NaiveDate,
+        db: &DatabaseManager,
+        tag: &str,
+    ) {
         let read_dir = match std::fs::read_dir(path) {
             Ok(d) => d,
             Err(_) => return,
@@ -704,19 +897,31 @@ impl SyncWorker {
             if p.is_dir() {
                 if let Some(fecha_str) = p.file_name().and_then(|s| s.to_str()) {
                     if fecha_str.len() == 6 && fecha_str.chars().all(|c| c.is_ascii_digit()) {
-                        if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(fecha_str, "%y%m%d") {
+                        if let Ok(parsed_date) =
+                            chrono::NaiveDate::parse_from_str(fecha_str, "%y%m%d")
+                        {
                             if parsed_date < limit_date {
                                 if let Err(e) = std::fs::remove_dir_all(&p) {
                                     let _ = db.insert_log(
-                                        "ERROR", "PURGE_FAIL",
-                                        &format!("No se pudo purgar {} en {:?}: {}", fecha_str, path, e),
-                                        None, Some(&format!("{:?}", e)),
+                                        "ERROR",
+                                        "PURGE_FAIL",
+                                        &format!(
+                                            "No se pudo purgar {} en {:?}: {}",
+                                            fecha_str, path, e
+                                        ),
+                                        None,
+                                        Some(&format!("{:?}", e)),
                                     );
                                 } else {
                                     let _ = db.insert_log(
-                                        "INFO", "PURGE_SUCCESS",
-                                        &format!("Purga reactiva ({}): eliminado {}.", tag, fecha_str),
-                                        None, None,
+                                        "INFO",
+                                        "PURGE_SUCCESS",
+                                        &format!(
+                                            "Purga reactiva ({}): eliminado {}.",
+                                            tag, fecha_str
+                                        ),
+                                        None,
+                                        None,
                                     );
                                 }
                                 let _ = self.tx.send(UiMessage::LogAdded);
@@ -751,7 +956,13 @@ impl TarWorker {
 
         while let Ok(msg) = rx.recv() {
             match msg {
-                TarMessage::BuildTar { canal, fecha, hora, tar_path, files } => {
+                TarMessage::BuildTar {
+                    canal,
+                    fecha,
+                    hora,
+                    tar_path,
+                    files,
+                } => {
                     if let Some(parent) = tar_path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -766,14 +977,23 @@ impl TarWorker {
                                 }
                             }
                             let _ = builder.finish();
-                            let _ = db.insert_log("INFO", "TAR_SUCCESS",
+                            let _ = db.insert_log(
+                                "INFO",
+                                "TAR_SUCCESS",
                                 &format!("TAR {} {} h{} en {:?}", canal, fecha, hora, tar_path),
-                                Some(&canal), None);
+                                Some(&canal),
+                                None,
+                            );
                             let _ = ui_tx.send(UiMessage::LogAdded);
                         }
                         Err(e) => {
-                            let _ = db.insert_log("ERROR", "TAR_FAIL",
-                                &format!("No se pudo crear TAR {:?}: {}", tar_path, e), None, None);
+                            let _ = db.insert_log(
+                                "ERROR",
+                                "TAR_FAIL",
+                                &format!("No se pudo crear TAR {:?}: {}", tar_path, e),
+                                None,
+                                None,
+                            );
                         }
                     }
                 }

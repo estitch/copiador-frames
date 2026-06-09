@@ -1,3 +1,9 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 mod config;
 mod db;
 mod worker;
@@ -5,8 +11,8 @@ mod worker;
 use db::DatabaseManager;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use tauri::Emitter;
 use worker::{SyncWorker, UiMessage, WorkerCommand};
 
@@ -45,9 +51,11 @@ fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), Stri
         if dest_changed {
             let _ = db.reset_destino_sync();
             let _ = db.insert_log(
-                "WARN", "DEST_CHANGED",
+                "WARN",
+                "DEST_CHANGED",
                 "Ruta de destino modificada. Re-sincronizando horas completadas anteriormente.",
-                None, None,
+                None,
+                None,
             );
         }
     }
@@ -74,7 +82,9 @@ fn get_dates(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn get_matrix(state: tauri::State<AppState>, date: String) -> Result<Vec<MatrixEntry>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let rows = db.get_registro_horas_por_fecha(&date).map_err(|e| e.to_string())?;
+    let rows = db
+        .get_registro_horas_por_fecha(&date)
+        .map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|(canal, hora, estado, cantidad)| MatrixEntry {
@@ -114,7 +124,8 @@ fn remove_canal(state: tauri::State<AppState>, code: String) -> Result<(), Strin
 #[tauri::command]
 fn trigger_sync(state: tauri::State<AppState>) -> Result<(), String> {
     let tx = state.tx.lock().map_err(|e| e.to_string())?;
-    tx.send(WorkerCommand::TriggerSync).map_err(|e| e.to_string())
+    tx.send(WorkerCommand::TriggerSync)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -141,8 +152,7 @@ fn main() {
     });
 
     // Conexión singleton para comandos Tauri
-    let db = DatabaseManager::new(&db_path)
-        .expect("Fallo al inicializar la base de datos");
+    let db = DatabaseManager::new(&db_path).expect("Fallo al inicializar la base de datos");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -198,6 +208,24 @@ fn forward_ui_messages(rx: Receiver<UiMessage>, handle: tauri::AppHandle) {
                         "hora": hora,
                         "status": status,
                         "count": count,
+                    }),
+                );
+            }
+            UiMessage::FileProgress {
+                canal,
+                fecha,
+                hora,
+                current,
+                total,
+            } => {
+                let _ = handle.emit(
+                    "file-progress",
+                    serde_json::json!({
+                        "canal": canal,
+                        "fecha": fecha,
+                        "hora": hora,
+                        "current": current,
+                        "total": total,
                     }),
                 );
             }
