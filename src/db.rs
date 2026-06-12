@@ -390,6 +390,7 @@ impl DatabaseManager {
     }
 
     /// Obtiene las últimas N entradas de logs
+    #[allow(dead_code)]
     pub fn get_recent_logs(&self, limit: u32) -> Result<Vec<LogEntry>, rusqlite::Error> {
         self.get_logs_paginated(limit, 0).map(|r| r.0)
     }

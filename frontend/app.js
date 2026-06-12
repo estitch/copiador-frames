@@ -5,6 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 // --- State ---
 let state = {
   config: null,
+  lastSyncTime: null,
   logs: [],
   logsTotal: 0,
   logsLoadingMore: false,
@@ -86,6 +87,17 @@ function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function formatTime(d) {
+  if (!d) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function updateSyncIndicator() {
+  const timeStr = state.lastSyncTime ? `Último sync: ${formatTime(state.lastSyncTime)}` : '';
+  document.getElementById('last-sync-time').textContent = timeStr;
 }
 
 // --- Logs ---
@@ -429,9 +441,11 @@ async function setupListeners() {
 
   await listen('sync-finished', () => {
     state.isSyncing = false;
+    state.lastSyncTime = new Date();
     state.progressMap = {};
     syncIndicator.textContent = 'Esperando ciclo';
     syncIndicator.className = 'sync-idle';
+    updateSyncIndicator();
     refreshMatrix();
     refreshLogs();
   });
@@ -493,6 +507,7 @@ async function init() {
   await refreshDates();
   await refreshLogs();
   await refreshChannels();
+  updateSyncIndicator();
   updateClocks();
   state.clockInterval = setInterval(updateClocks, 1000);
 }
