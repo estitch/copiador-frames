@@ -399,6 +399,15 @@ impl SyncWorker {
                 continue;
             }
 
+            // Saltear el read_dir si la tarea está en espera de estabilidad
+            if !is_incomplete {
+                if let Some((_, check_time)) = local_state.last_checks.get(&task_key) {
+                    if check_time.elapsed() < Duration::from_secs(5) {
+                        continue;
+                    }
+                }
+            }
+
             let current_count = Self::count_origin_files_superficial(&origin_hour_path);
 
             if is_incomplete {
@@ -448,12 +457,9 @@ impl SyncWorker {
 
             if current_count >= 3600 {
                 local_state.last_checks.remove(&task_key);
-            } else if let Some((prev_count, check_time)) =
+            } else if let Some((prev_count, _)) =
                 local_state.last_checks.get(&task_key).cloned()
             {
-                if check_time.elapsed() < Duration::from_secs(5) {
-                    continue;
-                }
                 if current_count != prev_count {
                     if let Err(e) = ch_db.insert_log(
                         "WARN",
@@ -470,7 +476,7 @@ impl SyncWorker {
                     let _ = ui_tx.send(UiMessage::LogAdded);
                     local_state
                         .last_checks
-                        .insert(task_key, (current_count, Instant::now()));
+                        .insert(task_key.clone(), (current_count, Instant::now()));
                     continue;
                 }
                 local_state.last_checks.remove(&task_key);
