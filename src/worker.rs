@@ -17,11 +17,9 @@ struct TaskCache {
     force_rescan: bool,
 }
 
-#[allow(dead_code)]
 pub enum WorkerCommand {
     TriggerSync,
     ReloadConfig,
-    Shutdown,
 }
 
 #[derive(Debug, Clone)]
@@ -86,28 +84,33 @@ pub struct SyncWorker {
     pool: rayon::ThreadPool,
     task_cache: Mutex<TaskCache>,
     tar_senders: Vec<Sender<TarMessage>>,
-    tar_handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl SyncWorker {
     pub fn new(db_path: PathBuf, rx: Receiver<WorkerCommand>, tx: Sender<UiMessage>) -> Self {
-        let mut tar_senders = Vec::with_capacity(TAR_WORKER_COUNT);
-        let mut tar_handles = Vec::with_capacity(TAR_WORKER_COUNT);
+        let config = DatabaseManager::new(&db_path)
+            .ok()
+            .and_then(|db| db.get_config().ok());
 
-        for _ in 0..TAR_WORKER_COUNT {
+        let tar_worker_count = config
+            .as_ref()
+            .map(|cfg| cfg.max_hilos_tar.max(1) as usize)
+            .unwrap_or(2);
+
+        let mut tar_senders = Vec::with_capacity(tar_worker_count);
+
+        for _ in 0..tar_worker_count {
             let (tx_inner, rx_inner) = std::sync::mpsc::channel();
             let tar_db_path = db_path.clone();
             let tar_ui_tx = tx.clone();
-            let handle = std::thread::spawn(move || {
+            std::thread::spawn(move || {
                 TarWorker::run_loop(rx_inner, tar_db_path, tar_ui_tx);
             });
             tar_senders.push(tx_inner);
-            tar_handles.push(handle);
         }
 
-        let pool_size = DatabaseManager::new(&db_path)
-            .ok()
-            .and_then(|db| db.get_config().ok())
+        let pool_size = config
+            .as_ref()
             .map(|cfg| cfg.max_hilos_copia.max(1) as usize)
             .unwrap_or(4);
 
@@ -129,7 +132,6 @@ impl SyncWorker {
                 force_rescan: true,
             }),
             tar_senders,
-            tar_handles,
         }
     }
 
@@ -158,7 +160,6 @@ impl SyncWorker {
 
         loop {
             let mut trigger_now = false;
-            let mut shutdown = false;
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
                     WorkerCommand::TriggerSync => {
@@ -183,28 +184,7 @@ impl SyncWorker {
                             cache.force_rescan = true;
                         }
                     }
-                    WorkerCommand::Shutdown => {
-                        shutdown = true;
-                    }
                 }
-            }
-
-            if shutdown {
-                self.tar_senders.clear();
-                for handle in self.tar_handles.drain(..) {
-                    let _ = handle.join();
-                }
-                if let Err(e) = db.insert_log(
-                    "INFO",
-                    "WORKER_SHUTDOWN",
-                    "Motor de sincronización backend apagado.",
-                    None,
-                    None,
-                ) {
-                    eprintln!("Error insertando WORKER_SHUTDOWN log: {}", e);
-                }
-                let _ = self.tx.send(UiMessage::LogAdded);
-                break;
             }
 
             let elapsed = last_sync_time.elapsed();
@@ -1004,8 +984,6 @@ impl SyncWorker {
         }
     }
 }
-
-const TAR_WORKER_COUNT: usize = 4;
 
 fn select_tar_worker(tar_path: &Path, num_workers: usize) -> usize {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

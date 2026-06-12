@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub margen_pre_minutos: u32,
     pub margen_post_minutos: u32,
     pub max_hilos_copia: u32,
+    pub max_hilos_tar: u32,
     pub canales: Vec<String>,
 }
 
@@ -29,18 +30,19 @@ impl Default for AppConfig {
             margen_pre_minutos: 0,
             margen_post_minutos: 0,
             max_hilos_copia: 4,
+            max_hilos_tar: 2,
             canales: Vec::new(),
         }
     }
 }
 
 impl AppConfig {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }

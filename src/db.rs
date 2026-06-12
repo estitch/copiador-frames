@@ -3,7 +3,6 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
     pub id: i64,
@@ -93,6 +92,10 @@ impl DatabaseManager {
             "ALTER TABLE CONFIGURACION ADD COLUMN max_hilos_copia INTEGER NOT NULL DEFAULT 4;",
             [],
         );
+        let _ = self.conn.execute(
+            "ALTER TABLE CONFIGURACION ADD COLUMN max_hilos_tar INTEGER NOT NULL DEFAULT 2;",
+            [],
+        );
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS LOG_SISTEMA (
@@ -112,8 +115,8 @@ impl DatabaseManager {
             "INSERT OR IGNORE INTO CONFIGURACION (
                 id, ruta_origen, ruta_copia_normal, ruta_copia_tar, horas_desface, 
                 dias_persistencia, habilitar_normal, habilitar_tar, margen_pre_minutos, margen_post_minutos,
-                max_hilos_copia
-            ) VALUES (1, '', '', '', 0, 2, 1, 0, 0, 0, 4);",
+                max_hilos_copia, max_hilos_tar
+            ) VALUES (1, '', '', '', 0, 2, 1, 0, 0, 0, 4, 2);",
             [],
         )?;
 
@@ -125,7 +128,7 @@ impl DatabaseManager {
         let mut stmt = self.conn.prepare(
             "SELECT ruta_origen, ruta_copia_normal, ruta_copia_tar, horas_desface, 
                     dias_persistencia, habilitar_normal, habilitar_tar, margen_pre_minutos, margen_post_minutos,
-                    max_hilos_copia
+                    max_hilos_copia, max_hilos_tar
              FROM CONFIGURACION WHERE id = 1",
         )?;
 
@@ -147,6 +150,7 @@ impl DatabaseManager {
                 margen_pre_minutos: row.get(7)?,
                 margen_post_minutos: row.get(8)?,
                 max_hilos_copia: row.get(9)?,
+                max_hilos_tar: row.get(10)?,
                 canales: Vec::new(),
             })
         })?;
@@ -177,7 +181,8 @@ impl DatabaseManager {
                 habilitar_tar = ?, 
                 margen_pre_minutos = ?, 
                 margen_post_minutos = ?,
-                max_hilos_copia = ?
+                max_hilos_copia = ?,
+                max_hilos_tar = ?
              WHERE id = 1",
             params![
                 config.ruta_origen.to_string_lossy().to_string(),
@@ -190,6 +195,7 @@ impl DatabaseManager {
                 config.margen_pre_minutos,
                 config.margen_post_minutos,
                 config.max_hilos_copia,
+                config.max_hilos_tar,
             ],
         )?;
 
@@ -501,23 +507,12 @@ impl LogBuffer {
         ));
     }
 
-    #[allow(dead_code)]
-    pub fn push_log_entry(&mut self, entry: &LogEntry) {
-        self.entries.push((
-            entry.nivel.clone(),
-            entry.tipo_accion.clone(),
-            entry.mensaje.clone(),
-            entry.canal_contexto.clone(),
-            entry.traza_error.clone(),
-        ));
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
