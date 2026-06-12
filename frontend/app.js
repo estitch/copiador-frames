@@ -494,8 +494,8 @@ async function setupListeners() {
     refreshLogs();
   });
 
-  await listen('config-changed', () => {
-    loadConfig();
+  await listen('config-changed', async () => {
+    await loadConfig();
     refreshChannels();
   });
 }
