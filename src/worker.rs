@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const COMPRESSED_POSITIVE_TTL: Duration = Duration::from_secs(5 * 60);
+const COMPRESSED_NEGATIVE_TTL: Duration = Duration::from_secs(30);
 
 struct TaskCache {
     all_tasks: Vec<(String, String, u8)>,
@@ -57,7 +59,7 @@ enum TarMessage {
 pub struct WorkerState {
     pub cooldowns: HashMap<String, Instant>,
     pub last_checks: HashMap<(String, String, u8), (u32, Instant)>,
-    pub zip_cooldowns: HashMap<(String, String, u8), Instant>,
+    pub compressed_cache: HashMap<(String, String, u8), (bool, Instant)>,
 }
 
 impl Default for WorkerState {
@@ -71,7 +73,7 @@ impl WorkerState {
         Self {
             cooldowns: HashMap::new(),
             last_checks: HashMap::new(),
-            zip_cooldowns: HashMap::new(),
+            compressed_cache: HashMap::new(),
         }
     }
 }
@@ -372,15 +374,20 @@ impl SyncWorker {
                 }
             }
 
-            let in_zip_cooldown = local_state
-                .zip_cooldowns
-                .get(&task_key)
-                .map(|t| t.elapsed() < Duration::from_secs(5 * 60))
-                .unwrap_or(false);
-            if in_zip_cooldown {
-                continue;
-            } else {
-                local_state.zip_cooldowns.remove(&task_key);
+            let cached_compressed = local_state.compressed_cache.get(&task_key).copied();
+            if let Some((has_files, ts)) = cached_compressed {
+                let ttl = if has_files {
+                    COMPRESSED_POSITIVE_TTL
+                } else {
+                    COMPRESSED_NEGATIVE_TTL
+                };
+                if ts.elapsed() < ttl {
+                    if has_files {
+                        continue;
+                    }
+                } else {
+                    local_state.compressed_cache.remove(&task_key);
+                }
             }
 
             let origin_hour_path = config
@@ -429,10 +436,14 @@ impl SyncWorker {
                 }
                 let _ = ui_tx.send(UiMessage::LogAdded);
                 local_state
-                    .zip_cooldowns
-                    .insert(task_key.clone(), Instant::now());
+                    .compressed_cache
+                    .insert(task_key.clone(), (true, Instant::now()));
                 local_state.last_checks.remove(&task_key);
                 continue;
+            } else {
+                local_state
+                    .compressed_cache
+                    .insert(task_key.clone(), (false, Instant::now()));
             }
 
             if current_count >= 3600 {
@@ -562,6 +573,7 @@ impl SyncWorker {
                         Some(canal),
                         None,
                     );
+                    local_state.compressed_cache.remove(&task_key);
                 }
                 Err(err) => {
                     if let Err(e) = ch_db.increment_hora_intentos(canal, fecha, *hora) {
@@ -614,7 +626,7 @@ impl SyncWorker {
         {
             let mut gs = state.lock().expect("WorkerState mutex poisoned");
             gs.cooldowns = local_state.cooldowns;
-            gs.zip_cooldowns = local_state.zip_cooldowns;
+            gs.compressed_cache = local_state.compressed_cache;
             gs.last_checks = local_state.last_checks;
         }
 
