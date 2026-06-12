@@ -329,8 +329,6 @@ $('#settings-save').addEventListener('click', async () => {
   const config = readConfigFromForm();
   try {
     await invoke('save_config', { config: JSON.stringify(config) });
-    state.config = config;
-    refreshLogs();
   } catch (e) {
     console.error('save_config:', e);
   }
@@ -354,8 +352,7 @@ $('#settings-import').addEventListener('click', async () => {
     if (path) {
       const json = await invoke('read_file', { path });
       const config = JSON.parse(json);
-      state.config = config;
-      applyConfigToForm();
+      await invoke('save_config', { config: JSON.stringify(config) });
     }
   } catch (e) {
     console.error('import:', e);
@@ -381,8 +378,6 @@ async function refreshChannels() {
       if (!confirmed) return;
       try {
         await invoke('remove_canal', { code: canal });
-        state.config.canales = state.config.canales.filter((c) => c !== canal);
-        refreshChannels();
       } catch (e) {
         console.error('remove_canal:', e);
       }
@@ -397,9 +392,7 @@ $('#canal-add').addEventListener('click', async () => {
   if (state.config?.canales.includes(code)) return;
   try {
     await invoke('add_canal', { code });
-    if (state.config) state.config.canales.push(code);
     input.value = '';
-    refreshChannels();
   } catch (e) {
     console.error('add_canal:', e);
   }
@@ -497,6 +490,11 @@ async function setupListeners() {
 
   await listen('log-added', () => {
     refreshLogs();
+  });
+
+  await listen('config-changed', () => {
+    loadConfig();
+    refreshChannels();
   });
 }
 

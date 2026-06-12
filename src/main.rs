@@ -46,7 +46,11 @@ fn get_config(state: tauri::State<AppState>) -> Result<config::AppConfig, String
 }
 
 #[tauri::command]
-fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), String> {
+fn save_config(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    config: String,
+) -> Result<(), String> {
     let new_config: config::AppConfig = serde_json::from_str(&config).map_err(|e| e.to_string())?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -68,6 +72,7 @@ fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), Stri
 
     db.save_config(&new_config).map_err(|e| e.to_string())?;
     let _ = db.insert_log("INFO", "CONFIG_SAVE", "Configuracion guardada.", None, None);
+    let _ = app_handle.emit("config-changed", ());
     let tx = state.tx.lock().map_err(|e| e.to_string())?;
     let _ = tx.send(WorkerCommand::ReloadConfig);
     Ok(())
@@ -104,7 +109,11 @@ fn get_matrix(state: tauri::State<AppState>, date: String) -> Result<Vec<MatrixE
 }
 
 #[tauri::command]
-fn add_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> {
+fn add_canal(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    code: String,
+) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut config = db.get_config().map_err(|e| e.to_string())?;
     if config.canales.contains(&code) {
@@ -112,17 +121,23 @@ fn add_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> 
     }
     config.canales.push(code);
     db.save_config(&config).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("config-changed", ());
     let tx = state.tx.lock().map_err(|e| e.to_string())?;
     let _ = tx.send(WorkerCommand::ReloadConfig);
     Ok(())
 }
 
 #[tauri::command]
-fn remove_canal(state: tauri::State<AppState>, code: String) -> Result<(), String> {
+fn remove_canal(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    code: String,
+) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut config = db.get_config().map_err(|e| e.to_string())?;
     config.canales.retain(|c| c != &code);
     db.save_config(&config).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("config-changed", ());
     let tx = state.tx.lock().map_err(|e| e.to_string())?;
     let _ = tx.send(WorkerCommand::ReloadConfig);
     Ok(())
