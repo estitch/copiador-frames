@@ -59,19 +59,25 @@ fn save_config(
         let dest_changed = current_config.ruta_copia_normal != new_config.ruta_copia_normal
             || current_config.ruta_copia_tar != new_config.ruta_copia_tar;
         if dest_changed {
-            let _ = db.reset_destino_sync();
-            let _ = db.insert_log(
+            if let Err(e) = db.reset_destino_sync() {
+                eprintln!("Error reset_destino_sync: {}", e);
+            }
+            if let Err(e) = db.insert_log(
                 "WARN",
                 "DEST_CHANGED",
                 "Ruta de destino modificada. Re-sincronizando horas completadas anteriormente.",
                 None,
                 None,
-            );
+            ) {
+                eprintln!("Error insertando DEST_CHANGED log: {}", e);
+            }
         }
     }
 
     db.save_config(&new_config).map_err(|e| e.to_string())?;
-    let _ = db.insert_log("INFO", "CONFIG_SAVE", "Configuracion guardada.", None, None);
+    if let Err(e) = db.insert_log("INFO", "CONFIG_SAVE", "Configuracion guardada.", None, None) {
+        eprintln!("Error insertando CONFIG_SAVE log: {}", e);
+    }
     let _ = app_handle.emit("config-changed", ());
     let tx = state.tx.lock().map_err(|e| e.to_string())?;
     let _ = tx.send(WorkerCommand::ReloadConfig);

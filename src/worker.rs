@@ -145,13 +145,15 @@ impl SyncWorker {
         let mut last_sync_time = Instant::now() - Duration::from_secs(300);
         let cycle_interval = Duration::from_secs(20);
 
-        let _ = db.insert_log(
+        if let Err(e) = db.insert_log(
             "INFO",
             "WORKER_START",
             "Motor de sincronización backend iniciado.",
             None,
             None,
-        );
+        ) {
+            eprintln!("Error insertando WORKER_START log: {}", e);
+        }
         let _ = self.tx.send(UiMessage::LogAdded);
 
         loop {
@@ -166,13 +168,15 @@ impl SyncWorker {
                         }
                     }
                     WorkerCommand::ReloadConfig => {
-                        let _ = db.insert_log(
+                        if let Err(e) = db.insert_log(
                             "INFO",
                             "CONFIG_RELOAD",
                             "Configuración recargada en el backend.",
                             None,
                             None,
-                        );
+                        ) {
+                            eprintln!("Error insertando CONFIG_RELOAD log: {}", e);
+                        }
                         let _ = self.tx.send(UiMessage::LogAdded);
                         trigger_now = true;
                         if let Ok(mut cache) = self.task_cache.lock() {
@@ -190,13 +194,15 @@ impl SyncWorker {
                 for handle in self.tar_handles.drain(..) {
                     let _ = handle.join();
                 }
-                let _ = db.insert_log(
+                if let Err(e) = db.insert_log(
                     "INFO",
                     "WORKER_SHUTDOWN",
                     "Motor de sincronización backend apagado.",
                     None,
                     None,
-                );
+                ) {
+                    eprintln!("Error insertando WORKER_SHUTDOWN log: {}", e);
+                }
                 let _ = self.tx.send(UiMessage::LogAdded);
                 break;
             }
@@ -205,13 +211,15 @@ impl SyncWorker {
             if trigger_now || elapsed >= cycle_interval {
                 let _ = self.tx.send(UiMessage::SyncStarted);
                 if let Err(e) = self.execute_sync_cycle() {
-                    let _ = db.insert_log(
+                    if let Err(log_err) = db.insert_log(
                         "ERROR",
                         "SYNC_CYCLE_FAIL",
                         &format!("Fallo en ciclo de sincronización: {:?}", e),
                         None,
                         None,
-                    );
+                    ) {
+                        eprintln!("Error insertando SYNC_CYCLE_FAIL log: {}", log_err);
+                    }
                     let _ = self.tx.send(UiMessage::LogAdded);
                 }
                 let _ = self.tx.send(UiMessage::SyncFinished);
@@ -244,7 +252,9 @@ impl SyncWorker {
                 cache.last_scan = Instant::now();
                 cache.force_rescan = false;
             }
-            let _ = log_buffer.flush(&db);
+            if let Err(e) = log_buffer.flush(&db) {
+                eprintln!("Error flusheando log buffer en scan: {}", e);
+            }
             cache.pending_tasks.clone()
         };
 
@@ -311,7 +321,9 @@ impl SyncWorker {
                     Some(canal),
                     None,
                 );
-                let _ = log_buffer.flush(&ch_db);
+                if let Err(e) = log_buffer.flush(&ch_db) {
+                    eprintln!("Error flusheando log buffer en CANAL_REMOVED: {}", e);
+                }
                 let _ = ui_tx.send(UiMessage::LogAdded);
                 return;
             }
@@ -413,14 +425,17 @@ impl SyncWorker {
                     } else {
                         "Rojo"
                     };
-                    let _ =
-                        ch_db.update_hora_status(canal, fecha, *hora, revert_status, local_count);
+                    if let Err(e) =
+                        ch_db.update_hora_status(canal, fecha, *hora, revert_status, local_count)
+                    {
+                        eprintln!("Error actualizando estado revertido para {}: {}", canal, e);
+                    }
                     continue;
                 }
             }
 
             if Self::has_compressed_files(&origin_hour_path) {
-                let _ = ch_db.insert_log(
+                if let Err(e) = ch_db.insert_log(
                     "WARN",
                     "COMPRESSED_EXCLUSION",
                     &format!(
@@ -429,7 +444,9 @@ impl SyncWorker {
                     ),
                     Some(canal),
                     None,
-                );
+                ) {
+                    eprintln!("Error insertando COMPRESSED_EXCLUSION log: {}", e);
+                }
                 let _ = ui_tx.send(UiMessage::LogAdded);
                 local_state
                     .zip_cooldowns
@@ -447,7 +464,7 @@ impl SyncWorker {
                     continue;
                 }
                 if current_count != prev_count {
-                    let _ = ch_db.insert_log(
+                    if let Err(e) = ch_db.insert_log(
                         "WARN",
                         "SIZE_UNSTABLE",
                         &format!(
@@ -456,7 +473,9 @@ impl SyncWorker {
                         ),
                         Some(canal),
                         None,
-                    );
+                    ) {
+                        eprintln!("Error insertando SIZE_UNSTABLE log: {}", e);
+                    }
                     let _ = ui_tx.send(UiMessage::LogAdded);
                     local_state
                         .last_checks
@@ -468,7 +487,7 @@ impl SyncWorker {
                 local_state
                     .last_checks
                     .insert(task_key.clone(), (current_count, Instant::now()));
-                let _ = ch_db.insert_log(
+                if let Err(e) = ch_db.insert_log(
                     "INFO",
                     "STABILITY_START",
                     &format!(
@@ -477,7 +496,9 @@ impl SyncWorker {
                     ),
                     Some(canal),
                     None,
-                );
+                ) {
+                    eprintln!("Error insertando STABILITY_START log: {}", e);
+                }
                 let _ = ui_tx.send(UiMessage::LogAdded);
                 continue;
             }
@@ -490,7 +511,9 @@ impl SyncWorker {
             let previous_stats =
                 Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
 
-            let _ = ch_db.update_hora_status(canal, fecha, *hora, "Naranja", previous_stats);
+            if let Err(e) = ch_db.update_hora_status(canal, fecha, *hora, "Naranja", previous_stats) {
+                eprintln!("Error marcando Naranja para {}: {}", canal, e);
+            }
             let _ = ui_tx.send(UiMessage::StatusUpdated {
                 canal: canal.to_string(),
                 fecha: fecha.clone(),
@@ -520,8 +543,11 @@ impl SyncWorker {
                     let final_count =
                         Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
                     let final_status = if final_count >= 3600 { "Verde" } else { "Azul" };
-                    let _ =
-                        ch_db.update_hora_status(canal, fecha, *hora, final_status, final_count);
+                    if let Err(e) =
+                        ch_db.update_hora_status(canal, fecha, *hora, final_status, final_count)
+                    {
+                        eprintln!("Error actualizando estado final para {}: {}", canal, e);
+                    }
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
                         canal: canal.to_string(),
                         fecha: fecha.clone(),
@@ -558,17 +584,21 @@ impl SyncWorker {
                     );
                 }
                 Err(err) => {
-                    let _ = ch_db.increment_hora_intentos(canal, fecha, *hora);
+                    if let Err(e) = ch_db.increment_hora_intentos(canal, fecha, *hora) {
+                        eprintln!("Error incrementando intentos para {}: {}", canal, e);
+                    }
                     let is_os_error_32 = err.raw_os_error() == Some(32);
 
                     let revert_status = if previous_stats > 0 { "Azul" } else { "Rojo" };
-                    let _ = ch_db.update_hora_status(
+                    if let Err(e) = ch_db.update_hora_status(
                         canal,
                         fecha,
                         *hora,
                         revert_status,
                         previous_stats,
-                    );
+                    ) {
+                        eprintln!("Error revirtiendo estado para {}: {}", canal, e);
+                    }
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
                         canal: canal.to_string(),
                         fecha: fecha.clone(),
@@ -608,7 +638,9 @@ impl SyncWorker {
             gs.last_checks = local_state.last_checks;
         }
 
-        let _ = log_buffer.flush(&ch_db);
+        if let Err(e) = log_buffer.flush(&ch_db) {
+            eprintln!("Error flusheando log buffer al final de process_channel: {}", e);
+        }
     }
 
     fn parse_task_time(fecha: &str, hora: u8) -> Option<chrono::NaiveDateTime> {
@@ -766,7 +798,9 @@ impl SyncWorker {
                         if dest.exists() {
                             true
                         } else {
-                            let _ = db.update_hora_status(canal, fecha, *hora, "Azul", 0);
+                            if let Err(e) = db.update_hora_status(canal, fecha, *hora, "Azul", 0) {
+                                eprintln!("Error revirtiendo a Azul en filter_pending: {}", e);
+                            }
                             false
                         }
                     } else {
@@ -908,7 +942,9 @@ impl SyncWorker {
             self.purge_path_older_than(&config.ruta_copia_tar, limit_date, db, "COPIA_TAR");
         }
         let limite_str = limit_date.format("%y%m%d").to_string();
-        let _ = db.delete_fechas_before(&limite_str);
+        if let Err(e) = db.delete_fechas_before(&limite_str) {
+            eprintln!("Error eliminando fechas anteriores a {}: {}", limite_str, e);
+        }
     }
 
     fn purge_path_older_than(
@@ -933,7 +969,7 @@ impl SyncWorker {
                         {
                             if parsed_date < limit_date {
                                 if let Err(e) = std::fs::remove_dir_all(&p) {
-                                    let _ = db.insert_log(
+                                    if let Err(log_err) = db.insert_log(
                                         "ERROR",
                                         "PURGE_FAIL",
                                         &format!(
@@ -942,9 +978,11 @@ impl SyncWorker {
                                         ),
                                         None,
                                         Some(&format!("{:?}", e)),
-                                    );
+                                    ) {
+                                        eprintln!("Error insertando PURGE_FAIL log: {}", log_err);
+                                    }
                                 } else {
-                                    let _ = db.insert_log(
+                                    if let Err(log_err) = db.insert_log(
                                         "INFO",
                                         "PURGE_SUCCESS",
                                         &format!(
@@ -953,7 +991,9 @@ impl SyncWorker {
                                         ),
                                         None,
                                         None,
-                                    );
+                                    ) {
+                                        eprintln!("Error insertando PURGE_SUCCESS log: {}", log_err);
+                                    }
                                 }
                                 let _ = self.tx.send(UiMessage::LogAdded);
                             }
@@ -995,7 +1035,9 @@ impl TarWorker {
                     files,
                 } => {
                     if let Some(parent) = tar_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            eprintln!("Error creando directorio TAR {:?}: {}", parent, e);
+                        }
                     }
                     match std::fs::File::create(&tar_path) {
                         Ok(f) => {
@@ -1003,28 +1045,36 @@ impl TarWorker {
                             for f in &files {
                                 if let Some(name) = f.file_name() {
                                     if let Ok(mut file) = std::fs::File::open(f) {
-                                        let _ = builder.append_file(name, &mut file);
+                                        if let Err(e) = builder.append_file(name, &mut file) {
+                                            eprintln!("Error agregando archivo al TAR: {}", e);
+                                        }
                                     }
                                 }
                             }
-                            let _ = builder.finish();
-                            let _ = db.insert_log(
+                            if let Err(e) = builder.finish() {
+                                eprintln!("Error finalizando TAR: {}", e);
+                            }
+                            if let Err(e) = db.insert_log(
                                 "INFO",
                                 "TAR_SUCCESS",
                                 &format!("TAR {} {} h{} en {:?}", canal, fecha, hora, tar_path),
                                 Some(&canal),
                                 None,
-                            );
+                            ) {
+                                eprintln!("Error insertando TAR_SUCCESS log: {}", e);
+                            }
                             let _ = ui_tx.send(UiMessage::LogAdded);
                         }
                         Err(e) => {
-                            let _ = db.insert_log(
+                            if let Err(log_err) = db.insert_log(
                                 "ERROR",
                                 "TAR_FAIL",
                                 &format!("No se pudo crear TAR {:?}: {}", tar_path, e),
                                 None,
                                 None,
-                            );
+                            ) {
+                                eprintln!("Error insertando TAR_FAIL log: {}", log_err);
+                            }
                         }
                     }
                 }
