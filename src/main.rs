@@ -31,6 +31,12 @@ struct MatrixEntry {
     cantidad: u32,
 }
 
+#[derive(Serialize)]
+struct LogResponse {
+    logs: Vec<db::LogEntry>,
+    total: u64,
+}
+
 // --- Tauri commands ---
 
 #[tauri::command]
@@ -68,9 +74,10 @@ fn save_config(state: tauri::State<AppState>, config: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn get_logs(state: tauri::State<AppState>, limit: u32) -> Result<Vec<db::LogEntry>, String> {
+fn get_logs(state: tauri::State<AppState>, limit: u32, offset: u32) -> Result<LogResponse, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_recent_logs(limit).map_err(|e| e.to_string())
+    let (logs, total) = db.get_logs_paginated(limit, offset).map_err(|e| e.to_string())?;
+    Ok(LogResponse { logs, total })
 }
 
 #[tauri::command]

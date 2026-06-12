@@ -6,6 +6,8 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 let state = {
   config: null,
   logs: [],
+  logsTotal: 0,
+  logsLoadingMore: false,
   dates: [],
   selectedDate: '',
   matrixData: [],
@@ -30,6 +32,28 @@ const errorClose = $('#error-close');
 const matrixDate = $('#matrix-date');
 const matrixContainer = $('#matrix-container');
 const matrixRefresh = $('#matrix-refresh');
+const confirmModal = $('#confirm-modal');
+const confirmMessage = $('#confirm-message');
+const modalConfirm = $('#modal-confirm');
+const modalCancel = $('#modal-cancel');
+const containerLoadMore = $('#load-more-container');
+
+// --- Confirm modal ---
+function showConfirmModal(message) {
+  return new Promise((resolve) => {
+    confirmMessage.textContent = message;
+    confirmModal.classList.remove('hidden');
+    const cleanup = () => {
+      confirmModal.classList.add('hidden');
+      modalConfirm.removeEventListener('click', onConfirm);
+      modalCancel.removeEventListener('click', onCancel);
+    };
+    const onConfirm = () => { cleanup(); resolve(true); };
+    const onCancel = () => { cleanup(); resolve(false); };
+    modalConfirm.addEventListener('click', onConfirm);
+    modalCancel.addEventListener('click', onCancel);
+  });
+}
 
 // --- Tab switching ---
 tabs.forEach((btn) => {
@@ -65,17 +89,38 @@ function escHtml(s) {
 }
 
 // --- Logs ---
+const LOGS_PAGE_SIZE = 50;
+
 async function refreshLogs() {
   try {
-    state.logs = await invoke('get_logs', { limit: 50 });
-    renderLogs();
+    const res = await invoke('get_logs', { limit: LOGS_PAGE_SIZE, offset: 0 });
+    state.logs = res.logs;
+    state.logsTotal = res.total;
+    renderLogs({ append: false });
+    containerLoadMore.classList.toggle('hidden', state.logs.length >= state.logsTotal);
   } catch (e) {
     console.error('get_logs:', e);
   }
 }
 
-function renderLogs() {
-  logsBody.innerHTML = state.logs.map((log, i) => {
+async function loadMoreLogs() {
+  if (state.logsLoadingMore) return;
+  state.logsLoadingMore = true;
+  try {
+    const offset = state.logs.length;
+    const res = await invoke('get_logs', { limit: LOGS_PAGE_SIZE, offset });
+    state.logs = state.logs.concat(res.logs);
+    state.logsTotal = res.total;
+    renderLogs({ append: true });
+    containerLoadMore.classList.toggle('hidden', state.logs.length >= state.logsTotal);
+  } catch (e) {
+    console.error('loadMoreLogs:', e);
+  }
+  state.logsLoadingMore = false;
+}
+
+function renderLogs({ append }) {
+  logsBody.innerHTML = state.logs.map((log) => {
     const levelClass = log.nivel === 'ERROR' ? 'log-level-error' : log.nivel === 'WARN' ? 'log-level-warn' : 'log-level-info';
     const canal = log.canal_contexto || '-';
     const errAttr = log.nivel === 'ERROR' ? ` data-error='${escHtml(JSON.stringify(log))}'` : '';
@@ -97,8 +142,13 @@ function renderLogs() {
       } catch (_) {}
     });
   });
+
+  if (!append) {
+    logsBody.parentElement.scrollTop = 0;
+  }
 }
 
+$('#load-more-btn').addEventListener('click', loadMoreLogs);
 errorClose.addEventListener('click', () => errorPanel.classList.add('hidden'));
 
 // --- Matrix ---
@@ -314,9 +364,12 @@ async function refreshChannels() {
   ).join('');
   list.querySelectorAll('.canal-remove').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      const canal = btn.dataset.canal;
+      const confirmed = await showConfirmModal(`Eliminar canal "${canal}"?`);
+      if (!confirmed) return;
       try {
-        await invoke('remove_canal', { code: btn.dataset.canal });
-        state.config.canales = state.config.canales.filter((c) => c !== btn.dataset.canal);
+        await invoke('remove_canal', { code: canal });
+        state.config.canales = state.config.canales.filter((c) => c !== canal);
         refreshChannels();
       } catch (e) {
         console.error('remove_canal:', e);

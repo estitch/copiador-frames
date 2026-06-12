@@ -391,13 +391,24 @@ impl DatabaseManager {
 
     /// Obtiene las últimas N entradas de logs
     pub fn get_recent_logs(&self, limit: u32) -> Result<Vec<LogEntry>, rusqlite::Error> {
+        self.get_logs_paginated(limit, 0).map(|r| r.0)
+    }
+
+    /// Obtiene logs con paginación y conteo total
+    pub fn get_logs_paginated(&self, limit: u32, offset: u32) -> Result<(Vec<LogEntry>, u64), rusqlite::Error> {
+        let total: u64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM LOG_SISTEMA",
+            [],
+            |row| row.get(0),
+        )?;
+
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, nivel, tipo_accion, mensaje, canal_contexto, traza_error 
              FROM LOG_SISTEMA 
-             ORDER BY id DESC LIMIT ?",
+             ORDER BY id DESC LIMIT ? OFFSET ?",
         )?;
 
-        let rows = stmt.query_map(params![limit], |row| {
+        let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(LogEntry {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
@@ -413,7 +424,7 @@ impl DatabaseManager {
         for r in rows {
             res.push(r?);
         }
-        Ok(res)
+        Ok((res, total))
     }
 
     /// Obtiene todas las fechas sincronizadas registradas

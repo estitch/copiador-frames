@@ -301,6 +301,22 @@ impl SyncWorker {
         };
         let mut log_buffer = LogBuffer::new();
 
+        // Si el canal fue eliminado de la config mientras el hilo arrancaba, abortar
+        if let Ok(current_cfg) = ch_db.get_config() {
+            if !current_cfg.canales.iter().any(|c| c == canal) {
+                log_buffer.push(
+                    "INFO",
+                    "CANAL_REMOVED",
+                    &format!("Canal {} eliminado durante sincronización. Hilo abortado.", canal),
+                    Some(canal),
+                    None,
+                );
+                let _ = log_buffer.flush(&ch_db);
+                let _ = ui_tx.send(UiMessage::LogAdded);
+                return;
+            }
+        }
+
         let mut local_state = state.lock().expect("WorkerState mutex poisoned").clone();
 
         for (fecha, hora) in tasks {

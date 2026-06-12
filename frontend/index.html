@@ -89,6 +89,9 @@
             </thead>
             <tbody id="logs-body"></tbody>
           </table>
+          <div id="load-more-container" class="load-more-container hidden">
+            <button id="load-more-btn" class="btn-small">Cargar m&aacute;s</button>
+          </div>
         </div>
       </section>
 
@@ -193,6 +196,17 @@
         <div id="canal-list" class="canal-list"></div>
       </section>
     </main>
+
+    <!-- Confirm Modal -->
+    <div id="confirm-modal" class="modal-overlay hidden">
+      <div class="modal-box">
+        <p id="confirm-message" class="modal-message"></p>
+        <div class="modal-actions">
+          <button id="modal-cancel" class="btn-secondary">Cancelar</button>
+          <button id="modal-confirm" class="btn-danger">Eliminar</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="app.js"></script>

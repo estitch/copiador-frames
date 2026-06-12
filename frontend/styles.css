@@ -120,6 +120,8 @@ h3 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
 .logs-table tbody tr:nth-child(even) { background: #f9fafb; }
 .logs-table tbody tr:nth-child(odd) { background: #fff; }
 .logs-table tbody td { padding: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 1px; }
+.load-more-container { display: flex; justify-content: center; padding: 8px 0; }
+.load-more-container.hidden { display: none; }
 .log-level-error { color: #dc2626; font-weight: 600; cursor: pointer; }
 .log-level-warn { color: #d97706; font-weight: 600; }
 .log-level-info { color: var(--text-secondary); }
@@ -178,6 +180,24 @@ h3 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
   line-height: 1;
 }
 .hidden { display: none !important; }
+
+/* Confirm modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+.modal-box {
+  background: #fff; border-radius: 10px; padding: 24px 28px;
+  min-width: 320px; max-width: 420px; box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+}
+.modal-message { margin: 0 0 20px; font-size: 14px; line-height: 1.5; color: #1f2937; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.btn-danger {
+  background: #dc2626; color: #fff; border: none; padding: 8px 20px;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 500;
+}
+.btn-danger:hover { background: #b91c1c; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
