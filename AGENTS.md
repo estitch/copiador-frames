@@ -2,58 +2,53 @@
 
 ## Project
 
-Rust desktop GUI (eframe/egui) that copies channel frame files from a network source to local destinations.  
-Single crate, no workspace.
+Rust/Tauri desktop app that copies channel frame files from a network source to local destinations.  
+Single crate, no workspace. Package name `heimdall-copiador`.
 
-## Build & Run
+## Build, lint, test
 
 ```powershell
-npm run tauri:dev     # Development mode (Vite hot-reload + Tauri window)
+npm run tauri:dev     # Vite hot-reload (port 1420) + Tauri window
 npm run tauri:build   # Production build
+npm run lint          # cargo clippy -- -D warnings
+npm run fmt           # cargo fmt --check
+npm run fmt:fix       # cargo fmt
+cargo test            # run all (inline tests only)
 ```
 
-No lint, format, or typecheck config exists.
+Tests live in `src/db.rs` (`#[cfg(test)]`). They create/clean `test_copiador.db` — run from repo root.
 
-## Tests
-
-```powershell
-cargo test
-```
-
-Tests live in `src/db.rs` (inline `#[cfg(test)]` module). They create/clean up a `test_copiador.db` file in the working directory.  
-Run from repo root so the temp DB lands alongside `copiador.db`.
-
-## Key Architecture
+## Key modules
 
 | Module | Role |
 |---|---|
-| `main.rs` | Tauri entry point with commands and event forwarding |
-| `lib.rs` | Library root, re-exports modules |
-| `config.rs` | `AppConfig` struct, JSON serialize/deserialize |
-| `db.rs` | SQLite via rusqlite, WAL mode, schema init on connect |
-| `worker.rs` | Background sync thread, communicates via mpsc channels |
-| `frontend/` | HTML/CSS/JS UI (Vite + vanilla JS), 4 tabs |
-| `src-tauri/` | Tauri config, capabilities, build script, icons |
+| `main.rs` | Tauri entrypoint, 10 commands, event forwarding |
+| `lib.rs` | Re-exports config, db, worker |
+| `config.rs` | `AppConfig` — serialized as JSON for IPC |
+| `db.rs` | SQLite via rusqlite (WAL, FK, 5s busy timeout). Fresh connection per op. |
+| `worker.rs` | Background sync (20s cycle); uses rayon pool + mpsc to UI |
+| `frontend/` | Vanilla JS + Vite (root set to `frontend/` in vite.config.js) |
+| `src-tauri/` | Tauri build script, icons, capabilities |
 
-- DB connection opened fresh per operation (each method opens its own `DatabaseManager`).
-- Worker runs a 20s sync cycle; UI has a "Sync Now" button that sends `WorkerCommand::TriggerSync`.
-- Dates stored as `YYMMDD` strings (lexicographically sortable).
-- Status colors: Verde (3600 files), Azul (incomplete), Naranja (copying), Rojo (error).
-- Origin is read-only; destination folders can be purged reactively based on `dias_persistencia`.
-- OS Error 32 (file locked) triggers a 30 min cooldown per channel.
-- ZIP/RAR presence delays retry by 5 min.
-- Stability check waits 5 min between two file counts before copying.
-- Max 2 retry attempts per hour slot, then skipped.
-- TAR packing runs after successful copy if `habilitar_tar` is on.
+## Architecture notes
 
-## DB Schema
+- **IPC**: JSON-serialized `AppConfig` crosses the invoke boundary. Config fields stored openly in DB — no secrets.
+- **Tauri capabilities**: `src-tauri/capabilities/default.json` — `core:default`, `dialog:default`, `dialog:allow-open`, `dialog:allow-save`.
+- **Events** (frontend listens): `sync-started`, `sync-finished`, `status-updated`, `file-progress`, `log-added`, `config-changed`.
+- **Worker sync cycle**: 20s loop. `TriggerSync` forces immediate scan. Tasks are filesystem-discovered (`YYMMDD/canal/HH`), filtered by DB state, copied via `CopyFileExW` (Windows) with `COPY_FILE_OPEN_SOURCE`.
+- **Retry rules**: max 2 attempts per hour slot, then skipped until reset. OS Error 32 → 30min cooldown per channel. ZIP/RAR → 5min skip. Stability check waits 5min between file counts.
+- **Destination changed** (`save_config` detects diff in normal/tar paths) → resets all "Verde" to "Azul" to force re-copy.
+- **Purge**: reactive, based on `dias_persistencia`. Deletes old date dirs from destination + DB records.
+- **TAR packing**: if `habilitar_tar`, dispatched to dedicated `TarWorker` threads after successful copy.
 
-- `CONFIGURACION` — single-row config (id=1)
+## DB schema
+
+- `CONFIGURACION` (id=1, single row) — paths, thresholds, flags
 - `CANAL` — channel codes
-- `FECHA_SINCRONIZACION` — date YYMMDD
-- `REGISTRO_HORA` — per-channel per-hour status (cascading deletes)
-- `LOG_SISTEMA` — audit log
+- `FECHA_SINCRONIZACION` — YYMMDD dates
+- `REGISTRO_HORA` — per-channel per-hour status, `intentos`, `ultimo_intento` (cascading deletes)
+- `LOG_SISTEMA` — audit log (paginated, 50 per page frontend default)
 
 ## Edition
 
-`edition = "2024"` in Cargo.toml — requires Rust 1.85+.
+`edition = "2024"` in both `Cargo.toml` and `rustfmt.toml` — requires Rust 1.85+.

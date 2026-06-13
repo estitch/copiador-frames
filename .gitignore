@@ -2,3 +2,7 @@
 .agents/skills/
 node_modules/
 frontend/dist/
+
+# graphify
+graphify-out/
+.graphify_python

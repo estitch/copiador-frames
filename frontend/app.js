@@ -434,15 +434,16 @@ async function setupListeners() {
     syncIndicator.className = 'sync-active';
   });
 
-  await listen('sync-finished', () => {
+  await listen('sync-finished', async () => {
     state.isSyncing = false;
     state.lastSyncTime = new Date();
     state.progressMap = {};
     syncIndicator.textContent = 'Esperando ciclo';
     syncIndicator.className = 'sync-idle';
     updateSyncIndicator();
-    refreshMatrix();
-    refreshLogs();
+    await refreshDates();
+    await refreshMatrix();
+    await refreshLogs();
   });
 
   await listen('status-updated', (event) => {
@@ -496,6 +497,8 @@ async function setupListeners() {
 
   await listen('config-changed', async () => {
     await loadConfig();
+    await refreshDates();
+    await refreshMatrix();
     refreshChannels();
   });
 }
