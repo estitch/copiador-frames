@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub margen_post_minutos: u32,
     pub max_hilos_copia: u32,
     pub max_hilos_tar: u32,
+    pub copia_intra_hora: bool,
     pub canales: Vec<String>,
 }
 
@@ -31,6 +32,7 @@ impl Default for AppConfig {
             margen_post_minutos: 0,
             max_hilos_copia: 4,
             max_hilos_tar: 2,
+            copia_intra_hora: false,
             canales: Vec::new(),
         }
     }

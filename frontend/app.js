@@ -295,6 +295,7 @@ function applyConfigToForm() {
   $('#set-habilitar-tar').checked = c.habilitar_tar;
   $('#set-max-hilos').value = c.max_hilos_copia;
   $('#set-max-hilos-tar').value = c.max_hilos_tar;
+  $('#set-intra-hora').checked = c.copia_intra_hora;
 }
 
 function readConfigFromForm() {
@@ -310,6 +311,7 @@ function readConfigFromForm() {
     margen_post_minutos: parseInt($('#set-margen-post').value) || 0,
     max_hilos_copia: parseInt($('#set-max-hilos').value) || 4,
     max_hilos_tar: parseInt($('#set-max-hilos-tar').value) || 2,
+    copia_intra_hora: $('#set-intra-hora').checked,
     canales: state.config?.canales || [],
   };
 }

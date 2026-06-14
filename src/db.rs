@@ -96,6 +96,10 @@ impl DatabaseManager {
             "ALTER TABLE CONFIGURACION ADD COLUMN max_hilos_tar INTEGER NOT NULL DEFAULT 2;",
             [],
         );
+        let _ = self.conn.execute(
+            "ALTER TABLE CONFIGURACION ADD COLUMN copia_intra_hora INTEGER NOT NULL DEFAULT 0;",
+            [],
+        );
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS LOG_SISTEMA (
@@ -115,8 +119,8 @@ impl DatabaseManager {
             "INSERT OR IGNORE INTO CONFIGURACION (
                 id, ruta_origen, ruta_copia_normal, ruta_copia_tar, horas_desface, 
                 dias_persistencia, habilitar_normal, habilitar_tar, margen_pre_minutos, margen_post_minutos,
-                max_hilos_copia, max_hilos_tar
-            ) VALUES (1, '', '', '', 0, 2, 1, 0, 0, 0, 4, 2);",
+                max_hilos_copia, max_hilos_tar, copia_intra_hora
+            ) VALUES (1, '', '', '', 0, 2, 1, 0, 0, 0, 4, 2, 0);",
             [],
         )?;
 
@@ -128,7 +132,7 @@ impl DatabaseManager {
         let mut stmt = self.conn.prepare(
             "SELECT ruta_origen, ruta_copia_normal, ruta_copia_tar, horas_desface, 
                     dias_persistencia, habilitar_normal, habilitar_tar, margen_pre_minutos, margen_post_minutos,
-                    max_hilos_copia, max_hilos_tar
+                    max_hilos_copia, max_hilos_tar, copia_intra_hora
              FROM CONFIGURACION WHERE id = 1",
         )?;
 
@@ -138,6 +142,7 @@ impl DatabaseManager {
             let ruta_copia_tar: String = row.get(2)?;
             let habilitar_normal_int: i32 = row.get(5)?;
             let habilitar_tar_int: i32 = row.get(6)?;
+            let copia_intra_hora_int: i32 = row.get(11)?;
 
             Ok(AppConfig {
                 ruta_origen: PathBuf::from(ruta_origen),
@@ -151,6 +156,7 @@ impl DatabaseManager {
                 margen_post_minutos: row.get(8)?,
                 max_hilos_copia: row.get(9)?,
                 max_hilos_tar: row.get(10)?,
+                copia_intra_hora: copia_intra_hora_int != 0,
                 canales: Vec::new(),
             })
         })?;
@@ -182,7 +188,8 @@ impl DatabaseManager {
                 margen_pre_minutos = ?, 
                 margen_post_minutos = ?,
                 max_hilos_copia = ?,
-                max_hilos_tar = ?
+                max_hilos_tar = ?,
+                copia_intra_hora = ?
              WHERE id = 1",
             params![
                 config.ruta_origen.to_string_lossy().to_string(),
@@ -196,6 +203,7 @@ impl DatabaseManager {
                 config.margen_post_minutos,
                 config.max_hilos_copia,
                 config.max_hilos_tar,
+                if config.copia_intra_hora { 1 } else { 0 },
             ],
         )?;
 

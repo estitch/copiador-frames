@@ -4,6 +4,7 @@ use chrono::Timelike;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -535,7 +536,7 @@ impl SyncWorker {
                 }
             };
 
-            match Self::execute_atomic_copy(&dest_hour_path, &send_progress, &origin_files) {
+            match Self::execute_atomic_copy(&dest_hour_path, &send_progress, &origin_files, config.copia_intra_hora) {
                 Ok((_copied_count, copied_files)) => {
                     let final_count =
                         Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
@@ -907,32 +908,73 @@ impl SyncWorker {
 
     fn execute_atomic_copy(
         dst: &Path,
-        progress: &dyn Fn(u32),
+        progress: &(dyn Fn(u32) + Sync),
         origin_files: &[PathBuf],
+        intra_hora: bool,
     ) -> std::io::Result<(u32, Vec<PathBuf>)> {
         std::fs::create_dir_all(dst)?;
-        let mut copied = Vec::new();
-        let mut count = 0u32;
-        for src_path in origin_files {
-            let name = src_path.file_name().expect("archivo sin nombre");
-            let dest = dst.join(name);
-            if dest.exists() && Self::files_match(src_path, &dest) {
+
+        if intra_hora {
+            use rayon::prelude::*;
+            let copied = Mutex::new(Vec::new());
+            let count = AtomicU32::new(0);
+            let total = origin_files.len() as u32;
+
+            origin_files.par_iter().try_for_each(|src_path| {
+                let name = src_path.file_name().expect("archivo sin nombre");
+                let dest = dst.join(name);
+                if dest.exists() && Self::files_match(src_path, &dest) {
+                    copied.lock().unwrap().push(dest);
+                    let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n.is_multiple_of(30) || n == total {
+                        progress(n);
+                    }
+                    return Ok::<_, std::io::Error>(());
+                }
+                if let Err(e) = Self::copy_file_optimized(src_path, &dest) {
+                    if e.raw_os_error() == Some(32) {
+                        return Err(e);
+                    }
+                    return Ok(());
+                }
+                copied.lock().unwrap().push(dest);
+                let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                if n.is_multiple_of(30) || n == total {
+                    progress(n);
+                }
+                Ok(())
+            })?;
+
+            let final_copied = copied.into_inner().unwrap();
+            let n = count.load(Ordering::SeqCst);
+            if !n.is_multiple_of(30) && n != total {
+                progress(n);
+            }
+            Ok((n, final_copied))
+        } else {
+            let mut copied = Vec::new();
+            let mut count = 0u32;
+            for src_path in origin_files {
+                let name = src_path.file_name().expect("archivo sin nombre");
+                let dest = dst.join(name);
+                if dest.exists() && Self::files_match(src_path, &dest) {
+                    copied.push(dest);
+                    count += 1;
+                    progress(count);
+                    continue;
+                }
+                if let Err(e) = Self::copy_file_optimized(src_path, &dest) {
+                    if e.raw_os_error() == Some(32) {
+                        return Err(e);
+                    }
+                    continue;
+                }
                 copied.push(dest);
                 count += 1;
                 progress(count);
-                continue;
             }
-            if let Err(e) = Self::copy_file_optimized(src_path, &dest) {
-                if e.raw_os_error() == Some(32) {
-                    return Err(e);
-                }
-                continue;
-            }
-            copied.push(dest);
-            count += 1;
-            progress(count);
+            Ok((count, copied))
         }
-        Ok((count, copied))
     }
 
     fn reactive_purge(
