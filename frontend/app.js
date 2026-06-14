@@ -171,7 +171,9 @@ async function refreshDates() {
       `<option value="${d}">${formatFecha(d)}</option>`
     ).join('');
     if (state.dates.length > 0) {
-      state.selectedDate = state.dates[0];
+      if (!state.dates.includes(state.selectedDate)) {
+        state.selectedDate = state.dates[0];
+      }
       matrixDate.value = state.selectedDate;
     }
   } catch (e) {
