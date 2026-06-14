@@ -893,6 +893,18 @@ impl SyncWorker {
         std::fs::copy(src, dst)
     }
 
+    fn files_match(src: &Path, dst: &Path) -> bool {
+        let src_meta = match src.metadata() {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        let dst_meta = match dst.metadata() {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        src_meta.len() == dst_meta.len() && src_meta.modified().ok() == dst_meta.modified().ok()
+    }
+
     fn execute_atomic_copy(
         dst: &Path,
         progress: &dyn Fn(u32),
@@ -904,6 +916,12 @@ impl SyncWorker {
         for src_path in origin_files {
             let name = src_path.file_name().expect("archivo sin nombre");
             let dest = dst.join(name);
+            if dest.exists() && Self::files_match(src_path, &dest) {
+                copied.push(dest);
+                count += 1;
+                progress(count);
+                continue;
+            }
             if let Err(e) = Self::copy_file_optimized(src_path, &dest) {
                 if e.raw_os_error() == Some(32) {
                     return Err(e);
