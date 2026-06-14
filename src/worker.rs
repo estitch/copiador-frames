@@ -408,7 +408,7 @@ impl SyncWorker {
                 }
             }
 
-            let current_count = Self::count_origin_files_superficial(&origin_hour_path);
+            let (current_count, has_compressed, origin_files) = Self::scan_origin_directory(&origin_hour_path);
 
             if is_incomplete {
                 let local_count =
@@ -430,7 +430,7 @@ impl SyncWorker {
                 }
             }
 
-            if Self::has_compressed_files(&origin_hour_path) {
+            if has_compressed {
                 if let Err(e) = ch_db.insert_log(
                     "WARN",
                     "COMPRESSED_EXCLUSION",
@@ -535,7 +535,7 @@ impl SyncWorker {
                 }
             };
 
-            match Self::execute_atomic_copy(&origin_hour_path, &dest_hour_path, &send_progress) {
+            match Self::execute_atomic_copy(&dest_hour_path, &send_progress, &origin_files) {
                 Ok((_copied_count, copied_files)) => {
                     let final_count =
                         Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
@@ -827,34 +827,30 @@ impl SyncWorker {
         pending
     }
 
-    fn has_compressed_files(path: &Path) -> bool {
+    fn scan_origin_directory(path: &Path) -> (u32, bool, Vec<PathBuf>) {
+        let mut count = 0u32;
+        let mut has_compressed = false;
+        let mut files = Vec::new();
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 if let Ok(ft) = entry.file_type() {
                     if ft.is_file() {
-                        let name = entry.file_name();
-                        if let Some(name_str) = name.to_str() {
-                            let name_lower = name_str.to_lowercase();
-                            if name_lower.ends_with(".zip") || name_lower.ends_with(".rar") {
-                                return true;
+                        count += 1;
+                        files.push(entry.path());
+                        if !has_compressed {
+                            let name = entry.file_name();
+                            if let Some(name_str) = name.to_str() {
+                                let name_lower = name_str.to_lowercase();
+                                if name_lower.ends_with(".zip") || name_lower.ends_with(".rar") {
+                                    has_compressed = true;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        false
-    }
-
-    fn count_origin_files_superficial(path: &Path) -> u32 {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-                .count() as u32
-        } else {
-            0
-        }
+        (count, has_compressed, files)
     }
 
     fn get_copied_file_count(base_path: &Path, fecha: &str, canal: &str, hora: u8) -> u32 {
@@ -898,28 +894,25 @@ impl SyncWorker {
     }
 
     fn execute_atomic_copy(
-        src: &Path,
         dst: &Path,
         progress: &dyn Fn(u32),
+        origin_files: &[PathBuf],
     ) -> std::io::Result<(u32, Vec<PathBuf>)> {
         std::fs::create_dir_all(dst)?;
         let mut copied = Vec::new();
         let mut count = 0u32;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                let name = entry.file_name();
-                let dest = dst.join(&name);
-                if let Err(e) = Self::copy_file_optimized(&entry.path(), &dest) {
-                    if e.raw_os_error() == Some(32) {
-                        return Err(e);
-                    }
-                    continue;
+        for src_path in origin_files {
+            let name = src_path.file_name().expect("archivo sin nombre");
+            let dest = dst.join(name);
+            if let Err(e) = Self::copy_file_optimized(src_path, &dest) {
+                if e.raw_os_error() == Some(32) {
+                    return Err(e);
                 }
-                copied.push(dest);
-                count += 1;
-                progress(count);
+                continue;
             }
+            copied.push(dest);
+            count += 1;
+            progress(count);
         }
         Ok((count, copied))
     }
