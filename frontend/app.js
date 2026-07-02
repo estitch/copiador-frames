@@ -228,6 +228,7 @@ function renderMatrix() {
             cellContent = `${Math.round((prog.current / prog.total) * 100)}%`;
           }
         }
+        if (entry.empaquetado_tar) cellClasses += ' tar-completed';
       }
       html += `<span class="${cellClasses}" style="background:${color}"
         data-canal="${escHtml(canal)}" data-hora="${h}"
@@ -253,7 +254,8 @@ function renderMatrix() {
       const cnt = cell.dataset.count;
       const prog = state.progressMap[`${c}-${h}`];
       const progText = prog ? `<br>Progreso: ${prog.current} / ${prog.total} (${Math.round((prog.current / prog.total) * 100)}%)` : '';
-      tooltip.innerHTML = `Canal: ${escHtml(c)}<br>Hora: ${String(h).padStart(2, '0')}:00<br>Estado: ${escHtml(est)}<br>Archivos: ${cnt} / 3600${progText}`;
+      const tarText = cell.classList.contains('tar-completed') ? '<br>TAR completado' : '';
+      tooltip.innerHTML = `Canal: ${escHtml(c)}<br>Hora: ${String(h).padStart(2, '0')}:00<br>Estado: ${escHtml(est)}<br>Archivos: ${cnt} / 3600${progText}${tarText}`;
       tooltip.classList.remove('hidden');
     });
     cell.addEventListener('mousemove', (e) => {
@@ -459,9 +461,9 @@ async function setupListeners() {
         (d) => d.canal === canal && d.hora === hora
       );
       if (idx >= 0) {
-        state.matrixData[idx] = { canal, hora, estado: status, cantidad: count };
+        state.matrixData[idx] = { ...state.matrixData[idx], canal, hora, estado: status, cantidad: count };
       } else {
-        state.matrixData.push({ canal, hora, estado: status, cantidad: count });
+        state.matrixData.push({ canal, hora, estado: status, cantidad: count, empaquetado_tar: false });
       }
       const cell = document.querySelector(
         `.matrix-cell[data-canal="${canal}"][data-hora="${hora}"]`
@@ -474,7 +476,7 @@ async function setupListeners() {
         cell.dataset.estado = status;
         cell.dataset.count = count;
         cell.textContent = '';
-        cell.className = 'matrix-cell';
+        cell.className = 'matrix-cell' + (state.matrixData.find(d => d.canal === canal && d.hora === hora)?.empaquetado_tar ? ' tar-completed' : '');
       }
     }
   });
@@ -504,6 +506,16 @@ async function setupListeners() {
     await refreshDates();
     await refreshMatrix();
     refreshChannels();
+  });
+
+  await listen('tar-finished', (event) => {
+    const { canal, hora } = event.payload;
+    const entry = state.matrixData.find(d => d.canal === canal && d.hora === hora);
+    if (entry) entry.empaquetado_tar = true;
+    const cell = document.querySelector(
+      `.matrix-cell[data-canal="${canal}"][data-hora="${hora}"]`
+    );
+    if (cell) cell.classList.add('tar-completed');
   });
 }
 

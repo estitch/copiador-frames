@@ -44,6 +44,11 @@ pub enum UiMessage {
         total: u32,
     },
     LogAdded,
+    TarFinished {
+        canal: String,
+        fecha: String,
+        hora: u8,
+    },
 }
 
 enum TarMessage {
@@ -300,7 +305,10 @@ impl SyncWorker {
                 log_buffer.push(
                     "INFO",
                     "CANAL_REMOVED",
-                    &format!("Canal {} eliminado durante sincronización. Hilo abortado.", canal),
+                    &format!(
+                        "Canal {} eliminado durante sincronización. Hilo abortado.",
+                        canal
+                    ),
                     Some(canal),
                     None,
                 );
@@ -409,7 +417,8 @@ impl SyncWorker {
                 }
             }
 
-            let (current_count, has_compressed, origin_files) = Self::scan_origin_directory(&origin_hour_path);
+            let (current_count, has_compressed, origin_files) =
+                Self::scan_origin_directory(&origin_hour_path);
 
             if is_incomplete {
                 let local_count =
@@ -458,9 +467,7 @@ impl SyncWorker {
 
             if current_count >= 3600 {
                 local_state.last_checks.remove(&task_key);
-            } else if let Some((prev_count, _)) =
-                local_state.last_checks.get(&task_key).cloned()
-            {
+            } else if let Some((prev_count, _)) = local_state.last_checks.get(&task_key).cloned() {
                 if current_count != prev_count {
                     if let Err(e) = ch_db.insert_log(
                         "WARN",
@@ -509,7 +516,8 @@ impl SyncWorker {
             let previous_stats =
                 Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
 
-            if let Err(e) = ch_db.update_hora_status(canal, fecha, *hora, "Naranja", previous_stats) {
+            if let Err(e) = ch_db.update_hora_status(canal, fecha, *hora, "Naranja", previous_stats)
+            {
                 eprintln!("Error marcando Naranja para {}: {}", canal, e);
             }
             let _ = ui_tx.send(UiMessage::StatusUpdated {
@@ -536,7 +544,12 @@ impl SyncWorker {
                 }
             };
 
-            match Self::execute_atomic_copy(&dest_hour_path, &send_progress, &origin_files, config.copia_intra_hora) {
+            match Self::execute_atomic_copy(
+                &dest_hour_path,
+                &send_progress,
+                &origin_files,
+                config.copia_intra_hora,
+            ) {
                 Ok((_copied_count, copied_files)) => {
                     let final_count =
                         Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
@@ -589,13 +602,9 @@ impl SyncWorker {
                     let is_os_error_32 = err.raw_os_error() == Some(32);
 
                     let revert_status = if previous_stats > 0 { "Azul" } else { "Rojo" };
-                    if let Err(e) = ch_db.update_hora_status(
-                        canal,
-                        fecha,
-                        *hora,
-                        revert_status,
-                        previous_stats,
-                    ) {
+                    if let Err(e) =
+                        ch_db.update_hora_status(canal, fecha, *hora, revert_status, previous_stats)
+                    {
                         eprintln!("Error revirtiendo estado para {}: {}", canal, e);
                     }
                     let _ = ui_tx.send(UiMessage::StatusUpdated {
@@ -638,7 +647,10 @@ impl SyncWorker {
         }
 
         if let Err(e) = log_buffer.flush(&ch_db) {
-            eprintln!("Error flusheando log buffer al final de process_channel: {}", e);
+            eprintln!(
+                "Error flusheando log buffer al final de process_channel: {}",
+                e
+            );
         }
     }
 
@@ -774,7 +786,8 @@ impl SyncWorker {
         db: &DatabaseManager,
         config: &AppConfig,
     ) -> Vec<(String, String, u8)> {
-        let mut cache_por_fecha: HashMap<String, Vec<(String, u8, String, u32)>> = HashMap::new();
+        let mut cache_por_fecha: HashMap<String, Vec<(String, u8, String, u32, bool)>> =
+            HashMap::new();
         let mut pending = Vec::new();
 
         for (fecha, canal, hora) in all_tasks {
@@ -787,7 +800,7 @@ impl SyncWorker {
             }
 
             let is_completed = cache_por_fecha.get(fecha).is_some_and(|records| {
-                records.iter().any(|(c, h, status, _)| {
+                records.iter().any(|(c, h, status, ..)| {
                     if c == canal && *h == *hora && status == "Verde" {
                         let dest = config
                             .ruta_copia_normal
@@ -1043,7 +1056,10 @@ impl SyncWorker {
                                         None,
                                         None,
                                     ) {
-                                        eprintln!("Error insertando PURGE_SUCCESS log: {}", log_err);
+                                        eprintln!(
+                                            "Error insertando PURGE_SUCCESS log: {}",
+                                            log_err
+                                        );
                                     }
                                 }
                                 let _ = self.tx.send(UiMessage::LogAdded);
@@ -1103,6 +1119,12 @@ impl TarWorker {
                             if let Err(e) = builder.finish() {
                                 eprintln!("Error finalizando TAR: {}", e);
                             }
+                            let _ = db.set_tar_completado(&canal, &fecha, hora);
+                            let _ = ui_tx.send(UiMessage::TarFinished {
+                                canal: canal.clone(),
+                                fecha: fecha.clone(),
+                                hora,
+                            });
                             if let Err(e) = db.insert_log(
                                 "INFO",
                                 "TAR_SUCCESS",

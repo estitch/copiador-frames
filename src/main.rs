@@ -29,6 +29,7 @@ struct MatrixEntry {
     hora: u8,
     estado: String,
     cantidad: u32,
+    empaquetado_tar: bool,
 }
 
 #[derive(Serialize)]
@@ -87,7 +88,9 @@ fn save_config(
 #[tauri::command]
 fn get_logs(state: tauri::State<AppState>, limit: u32, offset: u32) -> Result<LogResponse, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let (logs, total) = db.get_logs_paginated(limit, offset).map_err(|e| e.to_string())?;
+    let (logs, total) = db
+        .get_logs_paginated(limit, offset)
+        .map_err(|e| e.to_string())?;
     Ok(LogResponse { logs, total })
 }
 
@@ -105,12 +108,15 @@ fn get_matrix(state: tauri::State<AppState>, date: String) -> Result<Vec<MatrixE
         .map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
-        .map(|(canal, hora, estado, cantidad)| MatrixEntry {
-            canal,
-            hora,
-            estado,
-            cantidad,
-        })
+        .map(
+            |(canal, hora, estado, cantidad, empaquetado_tar)| MatrixEntry {
+                canal,
+                hora,
+                estado,
+                cantidad,
+                empaquetado_tar,
+            },
+        )
         .collect())
 }
 
@@ -254,6 +260,16 @@ fn forward_ui_messages(rx: Receiver<UiMessage>, handle: tauri::AppHandle) {
                         "hora": hora,
                         "current": current,
                         "total": total,
+                    }),
+                );
+            }
+            UiMessage::TarFinished { canal, fecha, hora } => {
+                let _ = handle.emit(
+                    "tar-finished",
+                    serde_json::json!({
+                        "canal": canal,
+                        "fecha": fecha,
+                        "hora": hora,
                     }),
                 );
             }

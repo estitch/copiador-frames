@@ -100,6 +100,10 @@ impl DatabaseManager {
             "ALTER TABLE CONFIGURACION ADD COLUMN copia_intra_hora INTEGER NOT NULL DEFAULT 0;",
             [],
         );
+        let _ = self.conn.execute(
+            "ALTER TABLE REGISTRO_HORA ADD COLUMN empaquetado_tar INTEGER NOT NULL DEFAULT 0;",
+            [],
+        );
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS LOG_SISTEMA (
@@ -356,13 +360,32 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Marca una hora como empaquetada en TAR
+    pub fn set_tar_completado(
+        &self,
+        canal: &str,
+        fecha: &str,
+        hora: u8,
+    ) -> Result<(), rusqlite::Error> {
+        let canal_id = match self.get_canal(canal)? {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let fecha_id = self.get_or_create_fecha(fecha)?;
+        self.conn.execute(
+            "UPDATE REGISTRO_HORA SET empaquetado_tar = 1 WHERE canal_id = ? AND fecha_id = ? AND hora = ?",
+            params![canal_id, fecha_id, hora],
+        )?;
+        Ok(())
+    }
+
     /// Obtiene los registros de hora de una fecha específica
     pub fn get_registro_horas_por_fecha(
         &self,
         codigo_fecha: &str,
-    ) -> Result<Vec<(String, u8, String, u32)>, rusqlite::Error> {
+    ) -> Result<Vec<(String, u8, String, u32, bool)>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT c.codigo_canal, r.hora, r.estado_color, r.cantidad_frames 
+            "SELECT c.codigo_canal, r.hora, r.estado_color, r.cantidad_frames, r.empaquetado_tar 
              FROM REGISTRO_HORA r
              JOIN CANAL c ON r.canal_id = c.id
              JOIN FECHA_SINCRONIZACION f ON r.fecha_id = f.id
@@ -375,6 +398,7 @@ impl DatabaseManager {
                 row.get::<_, u8>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, u32>(3)?,
+                row.get::<_, bool>(4)?,
             ))
         })?;
 
@@ -410,12 +434,14 @@ impl DatabaseManager {
     }
 
     /// Obtiene logs con paginación y conteo total
-    pub fn get_logs_paginated(&self, limit: u32, offset: u32) -> Result<(Vec<LogEntry>, u64), rusqlite::Error> {
-        let total: u64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM LOG_SISTEMA",
-            [],
-            |row| row.get(0),
-        )?;
+    pub fn get_logs_paginated(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<LogEntry>, u64), rusqlite::Error> {
+        let total: u64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM LOG_SISTEMA", [], |row| row.get(0))?;
 
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, nivel, tipo_accion, mensaje, canal_contexto, traza_error 
@@ -614,6 +640,12 @@ mod tests {
         assert_eq!(status[0].1, 2);
         assert_eq!(status[0].2, "Verde");
         assert_eq!(status[0].3, 3600);
+        assert!(!status[0].4); // empaquetado_tar inicialmente false
+
+        // Confirmar set_tar_completado
+        db.set_tar_completado("1234", "260519", 2).unwrap();
+        let status = db.get_registro_horas_por_fecha("260519").unwrap();
+        assert!(status[0].4);
 
         // Test attempts tracking
         let attempts_none = db.get_hora_intentos("1234", "260519", 2).unwrap();
