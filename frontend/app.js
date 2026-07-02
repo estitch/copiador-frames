@@ -509,7 +509,8 @@ async function setupListeners() {
   });
 
   await listen('tar-finished', (event) => {
-    const { canal, hora } = event.payload;
+    const { canal, fecha, hora } = event.payload;
+    if (fecha !== state.selectedDate) return;
     const entry = state.matrixData.find(d => d.canal === canal && d.hora === hora);
     if (entry) entry.empaquetado_tar = true;
     const cell = document.querySelector(

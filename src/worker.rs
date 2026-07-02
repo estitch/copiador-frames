@@ -246,38 +246,74 @@ impl SyncWorker {
             cache.pending_tasks.clone()
         };
 
-        if tasks.is_empty() {
-            return Ok(());
+        if !tasks.is_empty() {
+            let db_path = self.db_path.clone();
+            let ui_tx = &self.tx;
+            let tar_senders = &self.tar_senders;
+            let state = &self.state;
+
+            self.pool.scope(|s| {
+                for (fecha, canal, hora) in &tasks {
+                    let single_task = vec![(fecha.clone(), *hora)];
+                    let cfg = config.clone();
+                    let dbp = db_path.clone();
+                    let ch = canal.clone();
+                    s.spawn(move |_| {
+                        Self::process_channel(
+                            &ch,
+                            &single_task,
+                            &cfg,
+                            &source_now,
+                            &dbp,
+                            ui_tx,
+                            tar_senders,
+                            state,
+                        );
+                    });
+                }
+            });
         }
 
-        let db_path = self.db_path.clone();
-        let ui_tx = &self.tx;
-        let tar_senders = &self.tar_senders;
-        let state = &self.state;
-
-        self.pool.scope(|s| {
-            for (fecha, canal, hora) in &tasks {
-                let single_task = vec![(fecha.clone(), *hora)];
-                let cfg = config.clone();
-                let dbp = db_path.clone();
-                let ch = canal.clone();
-                s.spawn(move |_| {
-                    Self::process_channel(
-                        &ch,
-                        &single_task,
-                        &cfg,
-                        &source_now,
-                        &dbp,
-                        ui_tx,
-                        tar_senders,
-                        state,
-                    );
-                });
-            }
-        });
-
+        self.recover_pending_tar(&config, &db);
         self.reactive_purge(&config, source_date, &db);
         Ok(())
+    }
+
+    fn recover_pending_tar(&self, config: &AppConfig, db: &DatabaseManager) {
+        if !config.habilitar_tar || self.tar_senders.is_empty() {
+            return;
+        }
+        let pending = match db.get_pending_tar_records() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error consultando TAR pendientes: {}", e);
+                return;
+            }
+        };
+        for (canal, fecha, hora) in &pending {
+            let dest_hour = config
+                .ruta_copia_normal
+                .join(fecha)
+                .join(canal)
+                .join(hora.to_string());
+            let files = Self::list_dest_files(&dest_hour);
+            if files.is_empty() {
+                continue;
+            }
+            let tar_path = config
+                .ruta_copia_tar
+                .join(fecha)
+                .join(canal)
+                .join(format!("{}.tar", hora));
+            let idx = select_tar_worker(&tar_path, self.tar_senders.len());
+            let _ = self.tar_senders[idx].send(TarMessage::BuildTar {
+                canal: canal.clone(),
+                fecha: fecha.clone(),
+                hora: *hora,
+                tar_path,
+                files,
+            });
+        }
     }
 
     fn process_channel(
@@ -865,6 +901,18 @@ impl SyncWorker {
             }
         }
         (count, has_compressed, files)
+    }
+
+    fn list_dest_files(hour_path: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(hour_path) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                    files.push(entry.path());
+                }
+            }
+        }
+        files
     }
 
     fn get_copied_file_count(base_path: &Path, fecha: &str, canal: &str, hora: u8) -> u32 {

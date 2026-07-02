@@ -492,6 +492,30 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Obtiene registros que necesitan empaquetado TAR (Verde/Azul sin empaquetar)
+    pub fn get_pending_tar_records(&self) -> Result<Vec<(String, String, u8)>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.codigo_canal, f.codigo_fecha, r.hora
+             FROM REGISTRO_HORA r
+             JOIN CANAL c ON r.canal_id = c.id
+             JOIN FECHA_SINCRONIZACION f ON r.fecha_id = f.id
+             WHERE r.estado_color IN ('Verde', 'Azul')
+               AND r.empaquetado_tar = 0",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u8>(2)?,
+            ))
+        })?;
+        let mut res = Vec::new();
+        for r in rows {
+            res.push(r?);
+        }
+        Ok(res)
+    }
+
     /// Elimina registros de FECHA_SINCRONIZACION (y REGISTRO_HORA en cascada) cuyo
     /// codigo_fecha YYMMDD sea estrictamente anterior al límite dado.
     ///
