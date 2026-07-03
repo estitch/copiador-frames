@@ -500,7 +500,8 @@ impl DatabaseManager {
              JOIN CANAL c ON r.canal_id = c.id
              JOIN FECHA_SINCRONIZACION f ON r.fecha_id = f.id
              WHERE r.estado_color IN ('Verde', 'Azul')
-               AND r.empaquetado_tar = 0",
+               AND r.empaquetado_tar = 0
+             ORDER BY r.hora ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((

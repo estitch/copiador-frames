@@ -291,6 +291,17 @@ impl SyncWorker {
             }
         };
         for (canal, fecha, hora) in &pending {
+            let tar_path = config
+                .ruta_copia_tar
+                .join(fecha)
+                .join(canal)
+                .join(format!("{}.tar", hora));
+
+            if tar_path.exists() {
+                let _ = db.set_tar_completado(canal, fecha, *hora);
+                continue;
+            }
+
             let dest_hour = config
                 .ruta_copia_normal
                 .join(fecha)
@@ -300,11 +311,6 @@ impl SyncWorker {
             if files.is_empty() {
                 continue;
             }
-            let tar_path = config
-                .ruta_copia_tar
-                .join(fecha)
-                .join(canal)
-                .join(format!("{}.tar", hora));
             let idx = select_tar_worker(&tar_path, self.tar_senders.len());
             let _ = self.tar_senders[idx].send(TarMessage::BuildTar {
                 canal: canal.clone(),
@@ -1147,6 +1153,10 @@ impl TarWorker {
                     tar_path,
                     files,
                 } => {
+                    if tar_path.exists() {
+                        let _ = db.set_tar_completado(&canal, &fecha, hora);
+                        continue;
+                    }
                     if let Some(parent) = tar_path.parent() {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             eprintln!("Error creando directorio TAR {:?}: {}", parent, e);
