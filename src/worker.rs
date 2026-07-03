@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::db::{DatabaseManager, LogBuffer};
 use chrono::Timelike;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -274,12 +274,17 @@ impl SyncWorker {
             });
         }
 
-        self.recover_pending_tar(&config, &db);
+        self.recover_pending_tar(&config, &db, &tasks);
         self.reactive_purge(&config, source_date, &db);
         Ok(())
     }
 
-    fn recover_pending_tar(&self, config: &AppConfig, db: &DatabaseManager) {
+    fn recover_pending_tar(
+        &self,
+        config: &AppConfig,
+        db: &DatabaseManager,
+        current_tasks: &[(String, String, u8)],
+    ) {
         if !config.habilitar_tar || self.tar_senders.is_empty() {
             return;
         }
@@ -290,7 +295,17 @@ impl SyncWorker {
                 return;
             }
         };
+
+        let task_set: HashSet<(String, String, u8)> = current_tasks
+            .iter()
+            .map(|(f, c, h)| (f.clone(), c.clone(), *h))
+            .collect();
+
         for (canal, fecha, hora) in &pending {
+            if task_set.contains(&(fecha.clone(), canal.clone(), *hora)) {
+                continue;
+            }
+
             let tar_path = config
                 .ruta_copia_tar
                 .join(fecha)
