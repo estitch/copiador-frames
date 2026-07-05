@@ -314,6 +314,11 @@ impl SyncWorker {
 
             if tar_path.exists() {
                 let _ = db.set_tar_completado(canal, fecha, *hora);
+                let _ = self.tx.send(UiMessage::TarFinished {
+                    canal: canal.clone(),
+                    fecha: fecha.clone(),
+                    hora: *hora,
+                });
                 continue;
             }
 
@@ -1170,6 +1175,11 @@ impl TarWorker {
                 } => {
                     if tar_path.exists() {
                         let _ = db.set_tar_completado(&canal, &fecha, hora);
+                        let _ = ui_tx.send(UiMessage::TarFinished {
+                            canal: canal.clone(),
+                            fecha: fecha.clone(),
+                            hora,
+                        });
                         continue;
                     }
                     if let Some(parent) = tar_path.parent() {
@@ -1177,13 +1187,21 @@ impl TarWorker {
                             eprintln!("Error creando directorio TAR {:?}: {}", parent, e);
                         }
                     }
-                    match std::fs::File::create(&tar_path) {
+
+                    // Escribir a un archivo temporal y renombrar al finalizar
+                    // para evitar que recover_pending_tar marque el TAR como completo
+                    // mientras aún se está escribiendo.
+                    let mut tmp_path = tar_path.as_os_str().to_os_string();
+                    tmp_path.push(".tmp");
+                    let tmp_path = PathBuf::from(tmp_path);
+
+                    let write_ok = match std::fs::File::create(&tmp_path) {
                         Ok(f) => {
                             let mut builder = tar::Builder::new(f);
-                            for f in &files {
-                                if let Some(name) = f.file_name() {
-                                    if let Ok(mut file) = std::fs::File::open(f) {
-                                        if let Err(e) = builder.append_file(name, &mut file) {
+                            for file in &files {
+                                if let Some(name) = file.file_name() {
+                                    if let Ok(mut fh) = std::fs::File::open(file) {
+                                        if let Err(e) = builder.append_file(name, &mut fh) {
                                             eprintln!("Error agregando archivo al TAR: {}", e);
                                         }
                                     }
@@ -1192,6 +1210,28 @@ impl TarWorker {
                             if let Err(e) = builder.finish() {
                                 eprintln!("Error finalizando TAR: {}", e);
                             }
+                            true
+                        }
+                        Err(e) => {
+                            if let Err(log_err) = db.insert_log(
+                                "ERROR",
+                                "TAR_FAIL",
+                                &format!("No se pudo crear TAR {:?}: {}", tar_path, e),
+                                None,
+                                None,
+                            ) {
+                                eprintln!("Error insertando TAR_FAIL log: {}", log_err);
+                            }
+                            let _ = std::fs::remove_file(&tmp_path);
+                            false
+                        }
+                    };
+
+                    if write_ok {
+                        if let Err(e) = std::fs::rename(&tmp_path, &tar_path) {
+                            eprintln!("Error renombrando TAR {:?}: {}", tmp_path, e);
+                            let _ = std::fs::remove_file(&tmp_path);
+                        } else {
                             let _ = db.set_tar_completado(&canal, &fecha, hora);
                             let _ = ui_tx.send(UiMessage::TarFinished {
                                 canal: canal.clone(),
@@ -1208,17 +1248,6 @@ impl TarWorker {
                                 eprintln!("Error insertando TAR_SUCCESS log: {}", e);
                             }
                             let _ = ui_tx.send(UiMessage::LogAdded);
-                        }
-                        Err(e) => {
-                            if let Err(log_err) = db.insert_log(
-                                "ERROR",
-                                "TAR_FAIL",
-                                &format!("No se pudo crear TAR {:?}: {}", tar_path, e),
-                                None,
-                                None,
-                            ) {
-                                eprintln!("Error insertando TAR_FAIL log: {}", log_err);
-                            }
                         }
                     }
                 }
