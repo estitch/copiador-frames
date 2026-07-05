@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const COMPRESSED_POSITIVE_TTL: Duration = Duration::from_secs(5 * 60);
 const COMPRESSED_NEGATIVE_TTL: Duration = Duration::from_secs(30);
+const MAX_TAR_QUEUE_DEPTH: usize = 8;
 
 struct TaskCache {
     all_tasks: Vec<(String, String, u8)>,
@@ -57,7 +58,7 @@ enum TarMessage {
         fecha: String,
         hora: u8,
         tar_path: PathBuf,
-        files: Vec<PathBuf>,
+        dest_hour: PathBuf,
     },
 }
 
@@ -91,7 +92,7 @@ pub struct SyncWorker {
     state: Arc<Mutex<WorkerState>>,
     pool: rayon::ThreadPool,
     task_cache: Mutex<TaskCache>,
-    tar_senders: Vec<Sender<TarMessage>>,
+    tar_senders: Vec<SyncSender<TarMessage>>,
 }
 
 impl SyncWorker {
@@ -108,7 +109,7 @@ impl SyncWorker {
         let mut tar_senders = Vec::with_capacity(tar_worker_count);
 
         for _ in 0..tar_worker_count {
-            let (tx_inner, rx_inner) = std::sync::mpsc::channel();
+            let (tx_inner, rx_inner) = std::sync::mpsc::sync_channel(MAX_TAR_QUEUE_DEPTH);
             let tar_db_path = db_path.clone();
             let tar_ui_tx = tx.clone();
             std::thread::spawn(move || {
@@ -327,18 +328,19 @@ impl SyncWorker {
                 .join(fecha)
                 .join(canal)
                 .join(hora.to_string());
-            let files = Self::list_dest_files(&dest_hour);
-            if files.is_empty() {
+            if list_dest_files(&dest_hour).is_empty() {
                 continue;
             }
             let idx = select_tar_worker(&tar_path, self.tar_senders.len());
-            let _ = self.tar_senders[idx].send(TarMessage::BuildTar {
+            if self.tar_senders[idx].try_send(TarMessage::BuildTar {
                 canal: canal.clone(),
                 fecha: fecha.clone(),
                 hora: *hora,
                 tar_path,
-                files,
-            });
+                dest_hour,
+            }).is_err() {
+                eprintln!("Cola TAR llena para worker {}, se reintentará en el próximo ciclo.", idx);
+            }
         }
     }
 
@@ -349,7 +351,7 @@ impl SyncWorker {
         source_now: &chrono::DateTime<chrono::Local>,
         db_path: &Path,
         ui_tx: &Sender<UiMessage>,
-        tar_senders: &[Sender<TarMessage>],
+        tar_senders: &[SyncSender<TarMessage>],
         state: &Mutex<WorkerState>,
     ) {
         let ch_db = match DatabaseManager::new(db_path) {
@@ -612,7 +614,7 @@ impl SyncWorker {
                 &origin_files,
                 config.copia_intra_hora,
             ) {
-                Ok((_copied_count, copied_files)) => {
+                Ok((_copied_count, _)) => {
                     let final_count =
                         Self::get_copied_file_count(&config.ruta_copia_normal, fecha, canal, *hora);
                     let final_status = if final_count >= 3600 { "Verde" } else { "Azul" };
@@ -636,13 +638,15 @@ impl SyncWorker {
                             .join(canal)
                             .join(format!("{}.tar", hora));
                         let idx = select_tar_worker(&tar_path, tar_senders.len());
-                        let _ = tar_senders[idx].send(TarMessage::BuildTar {
+                        if tar_senders[idx].try_send(TarMessage::BuildTar {
                             canal: canal.to_string(),
                             fecha: fecha.clone(),
                             hora: *hora,
                             tar_path,
-                            files: copied_files.clone(),
-                        });
+                            dest_hour: dest_hour_path.clone(),
+                        }).is_err() {
+                            eprintln!("Cola TAR llena para worker {}, se reintentará en el próximo ciclo.", idx);
+                        }
                     }
 
                     log_buffer.push(
@@ -929,18 +933,6 @@ impl SyncWorker {
         (count, has_compressed, files)
     }
 
-    fn list_dest_files(hour_path: &Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(hour_path) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                    files.push(entry.path());
-                }
-            }
-        }
-        files
-    }
-
     fn get_copied_file_count(base_path: &Path, fecha: &str, canal: &str, hora: u8) -> u32 {
         let path = base_path.join(fecha).join(canal).join(format!("{}", hora));
         if let Ok(entries) = std::fs::read_dir(path) {
@@ -1146,6 +1138,18 @@ impl SyncWorker {
     }
 }
 
+fn list_dest_files(hour_path: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(hour_path) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
+}
+
 fn select_tar_worker(tar_path: &Path, num_workers: usize) -> usize {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tar_path.hash(&mut hasher);
@@ -1171,7 +1175,7 @@ impl TarWorker {
                     fecha,
                     hora,
                     tar_path,
-                    files,
+                    dest_hour,
                 } => {
                     if tar_path.exists() {
                         let _ = db.set_tar_completado(&canal, &fecha, hora);
@@ -1186,6 +1190,11 @@ impl TarWorker {
                         if let Err(e) = std::fs::create_dir_all(parent) {
                             eprintln!("Error creando directorio TAR {:?}: {}", parent, e);
                         }
+                    }
+
+                    let files = list_dest_files(&dest_hour);
+                    if files.is_empty() {
+                        continue;
                     }
 
                     // Escribir a un archivo temporal y renombrar al finalizar
